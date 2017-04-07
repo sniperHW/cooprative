@@ -96,9 +96,12 @@ func (this *CoopScheduler) resume() {
 	this.selfCo.Resume(1)
 }
 
-func (this *CoopScheduler) BlockCall(function func()) {
+func (this *CoopScheduler) Call(function func()) {
 	co := this.current
-	this.resume()//function()可能会阻塞，所以唤醒主线程继续工作
+	/* 唤醒调度go程，让它可以调度其它任务
+	*  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
+	*/
+	this.resume()
 	function()
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	this.queue <- &queElement{tt:type_resume,data:co}
