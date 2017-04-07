@@ -79,6 +79,11 @@ type CoopScheduler struct {
 }
 
 func NewCoopScheduler(onEvent func(interface{})) *CoopScheduler {
+
+	if nil == onEvent {
+		return nil
+	}
+
 	sche := &CoopScheduler{}
 	sche.onEvent      = onEvent
 	sche.queue        = make(chan *queElement,65535)
@@ -96,7 +101,7 @@ func (this *CoopScheduler) resume() {
 	this.selfCo.Resume(1)
 }
 
-func (this *CoopScheduler) Call(function func()) {
+func (this *CoopScheduler) Await(function func()) {
 	co := this.current
 	/* 唤醒调度go程，让它可以调度其它任务
 	*  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
