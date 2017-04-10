@@ -2,6 +2,7 @@ package coop
 
 import(
 	"sync"
+	"fmt"
 )
 
 type coroutine struct {
@@ -56,18 +57,108 @@ func (this *coList) Pop() (*coroutine){
 
 
 const (
-	type_task   = 1
-	type_resume = 2
+	type_event  = 1
+	type_co     = 2
 )
 
 type queElement struct {
-	tt   int
-	data interface {}
+	next       *queElement
+	data        interface {}
 }
+
+type que struct {
+	head *queElement
+	tail *queElement
+	size  int32	
+}
+
+func (this *que) push(element *queElement) {
+	element.next = nil
+	if this.head == nil && this.tail == nil {
+		this.head = element
+		this.tail = element
+	}else{
+		this.tail.next = element
+		this.tail = element
+	}
+	this.size += 1
+}
+
+func (this *que) pop() (*queElement){
+	if this.head == nil {
+		return nil
+	}else{
+		front := this.head
+		this.head = this.head.next
+		if this.head == nil {
+			this.tail = nil
+		}
+		this.size -= 1
+		return front
+	}
+}
+
+func (this *que) empty() bool {
+	return this.size == 0
+}
+
+
+/*
+*  event和co使用单独队列，优先返回co队列中的元素，提高co的处理优先级
+*/
+
+type eventQueue struct {
+	evList     que
+	coList     que
+	guard      sync.Mutex
+	cond      *sync.Cond
+}
+
+func (self *eventQueue) pushEvent(event interface{}) error {
+	self.guard.Lock()
+	ele := &queElement{data:event}
+	self.evList.push(ele)
+	self.guard.Unlock()
+	self.cond.Signal()
+	return nil
+}
+
+func (self *eventQueue) pushCo(co *coroutine) error {
+	self.guard.Lock()
+	ele := &queElement{data:co}
+	self.coList.push(ele)
+	self.guard.Unlock()
+	self.cond.Signal()
+	return nil
+}
+
+func (self *eventQueue) pop() (int,interface{}) {
+	self.guard.Lock()
+	for self.evList.empty() && self.coList.empty() {
+		self.cond.Wait()
+	}
+
+	var tt int
+	var data interface{}
+
+	if !self.coList.empty() {
+		tt = type_co
+		data = self.coList.pop().data
+	}else {
+		tt = type_event
+		data = self.evList.pop().data
+	}
+
+	self.guard.Unlock()
+	return tt,data
+
+}
+
+
 
 type CoopScheduler struct {
 	coPool       coList              //free coroutine	
-	queue        chan *queElement
+	queue        eventQueue
 	current     *coroutine         //当前正在运行的go程序
 	onEvent      func(interface{})
 	selfCo       coroutine
@@ -86,7 +177,8 @@ func NewCoopScheduler(onEvent func(interface{})) *CoopScheduler {
 
 	sche := &CoopScheduler{}
 	sche.onEvent      = onEvent
-	sche.queue        = make(chan *queElement,65535)
+	sche.queue        = eventQueue{}
+	sche.queue.cond   = sync.NewCond(&sche.queue.guard)
 	sche.reserveCount = 10000
 	sche.selfCo       = coroutine{que:make(chan interface{})}
 	sche.coPool       = coList{head:nil,tail:nil,size:0} 
@@ -109,7 +201,7 @@ func (this *CoopScheduler) Await(function func()) {
 	this.resume()
 	function()
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
-	this.queue <- &queElement{tt:type_resume,data:co}
+	this.queue.pushCo(co)
 	co.Yild()
 }
 
@@ -117,8 +209,7 @@ func (this *CoopScheduler) PostEvent(data interface{}) {
 	if this.closed {
 		return
 	}
-
-	this.queue <- &queElement{tt:type_task,data:data}
+	this.queue.pushEvent(data)
 }
 
 func (this *CoopScheduler) newCo() {
@@ -149,11 +240,10 @@ func (this *CoopScheduler) newCo() {
 		}()
 	}
 	this.coCount += 10
-	//fmt.Printf("coCount:%d\n",this.coCount)
+	fmt.Printf("coCount:%d\n",this.coCount)
 }
 
 func (this *CoopScheduler) runTask(e interface{}){
-	//fmt.Printf("runTask\n")
 	for {
 		co := this.coPool.Pop()
 		if nil == co {
@@ -180,18 +270,18 @@ func (this *CoopScheduler) Start() {
 	this.mtx.Unlock()
 
 	for {
-		qele := <- this.queue
-		if qele.tt == type_task {
+		tt,ele := this.queue.pop()
+		if tt == type_event {
 			if !this.closed {
-				this.runTask(qele.data)
+				this.runTask(ele)
 			}
 		}else {
-			co := qele.data.(*coroutine)
+			co := ele.(*coroutine)
 			this.current = co
 			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
 			co.Resume(1)
 			this.yild()			
-		}
+		}		
 
 		if this.closed {
 			for {
@@ -219,3 +309,4 @@ func (this *CoopScheduler) Close() {
 	}
 	this.mtx.Unlock()
 }
+
