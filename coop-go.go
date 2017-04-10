@@ -6,20 +6,20 @@ import(
 )
 
 type coroutine struct {
-	next  *coroutine
-	que    chan interface{}
+	next     *coroutine
+	signal    chan interface{}
 }
 
 func (this *coroutine) Yild() interface{} {
-	return <- this.que
+	return <- this.signal
 }
 
 func (this *coroutine) Resume(data interface{}) {
-	this.que <- data
+	this.signal <- data
 }
 
 func (this *coroutine) Exit() {
-	close(this.que)
+	close(this.signal)
 }
 
 
@@ -180,7 +180,7 @@ func NewCoopScheduler(onEvent func(interface{})) *CoopScheduler {
 	sche.queue        = eventQueue{}
 	sche.queue.cond   = sync.NewCond(&sche.queue.guard)
 	sche.reserveCount = 10000
-	sche.selfCo       = coroutine{que:make(chan interface{})}
+	sche.selfCo       = coroutine{signal:make(chan interface{})}
 	sche.coPool       = coList{head:nil,tail:nil,size:0} 
 	return sche
 }
@@ -214,7 +214,7 @@ func (this *CoopScheduler) PostEvent(data interface{}) {
 
 func (this *CoopScheduler) newCo() {
 	for i := 0;i < 10;i++{
-		co := &coroutine{que:make(chan interface{})}
+		co := &coroutine{signal:make(chan interface{})}
 		this.coPool.PushFront(co)
 		go func(){
 			for {
