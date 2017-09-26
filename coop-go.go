@@ -1,8 +1,7 @@
-package coop
+package cooprative
 
 import(
 	"sync"
-	"fmt"
 )
 
 type coroutine struct {
@@ -156,11 +155,11 @@ func (self *eventQueue) pop() (int,interface{}) {
 
 
 
-type CoopScheduler struct {
+type Scheduler struct {
 	coPool       coList              //free coroutine	
 	queue        eventQueue
 	current     *coroutine         //当前正在运行的go程序
-	onEvent      func(interface{})
+	onEvent      func(*Scheduler,interface{})
 	selfCo       coroutine
 	coCount      int
 	reserveCount int
@@ -169,13 +168,13 @@ type CoopScheduler struct {
 	mtx          sync.Mutex
 }
 
-func NewCoopScheduler(onEvent func(interface{})) *CoopScheduler {
+func NewScheduler(onEvent func(*Scheduler,interface{})) *Scheduler {
 
 	if nil == onEvent {
 		return nil
 	}
 
-	sche := &CoopScheduler{}
+	sche := &Scheduler{}
 	sche.onEvent      = onEvent
 	sche.queue        = eventQueue{}
 	sche.queue.cond   = sync.NewCond(&sche.queue.guard)
@@ -185,15 +184,15 @@ func NewCoopScheduler(onEvent func(interface{})) *CoopScheduler {
 	return sche
 }
 
-func (this *CoopScheduler) yild () {
+func (this *Scheduler) yild () {
 	this.selfCo.Yild()
 }
 
-func (this *CoopScheduler) resume() {
+func (this *Scheduler) resume() {
 	this.selfCo.Resume(1)
 }
 
-func (this *CoopScheduler) Await(function func()) {
+func (this *Scheduler) Await(function func()) {
 	co := this.current
 	/* 唤醒调度go程，让它可以调度其它任务
 	*  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
@@ -205,14 +204,14 @@ func (this *CoopScheduler) Await(function func()) {
 	co.Yild()
 }
 
-func (this *CoopScheduler) PostEvent(data interface{}) {
+func (this *Scheduler) PostEvent(data interface{}) {
 	if this.closed {
 		return
 	}
 	this.queue.pushEvent(data)
 }
 
-func (this *CoopScheduler) newCo() {
+func (this *Scheduler) newCo() {
 	for i := 0;i < 10;i++{
 		co := &coroutine{signal:make(chan interface{})}
 		this.coPool.PushFront(co)
@@ -225,7 +224,7 @@ func (this *CoopScheduler) newCo() {
 					return
 				}
 
-				this.onEvent(e)
+				this.onEvent(this,e)
 
 				if this.coCount > this.reserveCount {
 					//co数量超过保留大小，终止
@@ -240,10 +239,9 @@ func (this *CoopScheduler) newCo() {
 		}()
 	}
 	this.coCount += 10
-	fmt.Printf("coCount:%d\n",this.coCount)
 }
 
-func (this *CoopScheduler) runTask(e interface{}){
+func (this *Scheduler) runTask(e interface{}){
 	for {
 		co := this.coPool.Pop()
 		if nil == co {
@@ -259,7 +257,7 @@ func (this *CoopScheduler) runTask(e interface{}){
 }
 
 
-func (this *CoopScheduler) Start() {
+func (this *Scheduler) Start() {
 
 	this.mtx.Lock()
 	if this.closed || this.started {
@@ -302,7 +300,7 @@ func (this *CoopScheduler) Start() {
 	}
 }
 
-func (this *CoopScheduler) Close() {
+func (this *Scheduler) Close() {
 	this.mtx.Lock()
 	if !this.closed {
 		this.closed = true

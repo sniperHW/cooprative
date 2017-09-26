@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 	"testing"
-	"coop-go"
+	"github.com/sniperHW/cooprative"
 )
 
 
@@ -28,10 +28,7 @@ func TestSche(t *testing.T) {
 	}()
 
 
-	var p *coop.CoopScheduler
-
-
-	p = coop.NewCoopScheduler(func (e interface{}){
+	s := cooprative.NewScheduler(func (s *cooprative.Scheduler,e interface{}){
 		atomic.AddInt32(&c1,1)
 		atomic.AddInt32(&count,1)
 		c2++
@@ -40,7 +37,7 @@ func TestSche(t *testing.T) {
 		}
 
 		if c2 >= 8000000 {
-			p.Close()
+			s.Close()
 			return
 		}
 
@@ -48,15 +45,15 @@ func TestSche(t *testing.T) {
 			time.Sleep(time.Millisecond * time.Duration(10))
 		})*/
 		
-		p.PostEvent(1)
+		s.PostEvent(1)
 	})
 
 	for i := 0; i < 10000; i++ {
-		p.PostEvent(1)
+		s.PostEvent(1)
 	}
 
 
-	p.Start()
+	s.Start()
 
 	fmt.Printf("scheduler stop,total taskCount:%d\n",c2)
 
