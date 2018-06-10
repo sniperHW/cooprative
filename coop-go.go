@@ -174,13 +174,13 @@ func NewScheduler(onEvent func(*Scheduler,interface{})) *Scheduler {
 		return nil
 	}
 
-	sche := &Scheduler{}
-	sche.onEvent      = onEvent
-	sche.queue        = eventQueue{}
-	sche.queue.cond   = sync.NewCond(&sche.queue.guard)
-	sche.reserveCount = 10000
-	sche.selfCo       = coroutine{signal:make(chan interface{})}
-	sche.coPool       = coList{head:nil,tail:nil,size:0} 
+	sche := &Scheduler{
+		onEvent : onEvent,
+		queue   : eventQueue{},
+		cond    : sync.NewCond(&sche.queue.guard),
+		reserveCount : 10000,
+		selfCo       : coroutine{signal:make(chan interface{})}
+		coPool       : coList{head:nil,tail:nil,size:0} 
 	return sche
 }
 
