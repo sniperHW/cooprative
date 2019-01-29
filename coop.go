@@ -241,16 +241,28 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} 
 	 */
 	this.resume()
 
-	out := oriF.Call(in)
-
 	var ret []interface{}
 
-	if len(out) > 0 {
-		ret = make([]interface{}, 0, len(out))
-		for _, v := range out {
-			ret = append(ret, v.Interface())
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				buf := make([]byte, 65535)
+				l := runtime.Stack(buf, false)
+				err := fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
+				fmt.Println(err.Error())
+			}
+		}()
+
+		out := oriF.Call(in)
+
+		if len(out) > 0 {
+			ret = make([]interface{}, 0, len(out))
+			for _, v := range out {
+				ret = append(ret, v.Interface())
+			}
 		}
-	}
+	}()
+
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	this.queue.pushCo(co)
 	co.Yild()
