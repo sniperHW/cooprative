@@ -61,7 +61,7 @@ func main() {
 	server, err := listener.New("tcp4", service)
 	if server != nil {
 		fmt.Printf("server running on:%s\n", service)
-		err = server.Start(func(session kendynet.StreamSession) {
+		err = server.Serve(func(session kendynet.StreamSession) {
 			session.Start(func(event *kendynet.Event) {
 				if event.EventType == kendynet.EventTypeError {
 					event.Session.Close(event.Data.(error).Error(), 0)
