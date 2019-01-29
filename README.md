@@ -43,9 +43,7 @@ func main() {
 		}
 
       	//调用阻塞函数
-		p.Await(func () {
-			time.Sleep(time.Millisecond * time.Duration(10))
-		})
+		p.Await(time.Sleep,time.Millisecond * time.Duration(10))
 		//继续投递任务
 		p.PostEvent(1)
 	})
@@ -75,14 +73,8 @@ func main() {
 下面是一个同步获取redis数据的调用:
 
 ~~~go
-ret
 
-Await(func() {
-   /*
-   *这里面不能有任何线程不安全的代码,只是一个简单的函数调用
-   */  
-	ret = redis.get()
-})
+ret := Await(redis.get)
 
 if ret {
   //根据返回值执行处理逻辑
@@ -96,7 +88,6 @@ if ret {
 在我的 i5 双核 2.5GHz mac mini上每秒钟可以执行100W次的调度，虽然跟C协程数千万的调度次数没法比，但是也基本够用了，毕竟在实现的使用中，每秒能处理10W的请求已经相当不错了。
 
 
-更多使用示例请见[coop-go-exampe](https://github.com/sniperHW/coop-go-example)
 
 
 
