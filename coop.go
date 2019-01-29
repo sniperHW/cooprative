@@ -3,6 +3,7 @@ package cooprative
 import (
 	"reflect"
 	"sync"
+	"sync/atomic"
 )
 
 type coroutine struct {
@@ -160,11 +161,11 @@ type Scheduler struct {
 	current      *coroutine //当前正在运行的go程序
 	onEvent      func(*Scheduler, interface{})
 	selfCo       coroutine
-	coCount      int
-	reserveCount int
-	started      bool
-	closed       bool
-	mtx          sync.Mutex
+	coCount      int32
+	reserveCount int32
+	started      int32
+	closed       int32
+	//mtx          sync.Mutex
 }
 
 func NewScheduler(onEvent func(*Scheduler, interface{})) *Scheduler {
@@ -229,7 +230,7 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} 
 }
 
 func (this *Scheduler) PostEvent(data interface{}) {
-	if this.closed {
+	if atomic.LoadInt32(&this.closed) == 1 {
 		return
 	}
 	this.queue.pushEvent(data)
@@ -239,20 +240,21 @@ func (this *Scheduler) newCo() {
 	for i := 0; i < 10; i++ {
 		co := &coroutine{signal: make(chan interface{})}
 		this.coPool.PushFront(co)
+		atomic.AddInt32(&this.coCount, 1)
 		go func() {
 			for {
 				e := co.Yild()
 				if nil == e {
-					this.coCount--
+					atomic.AddInt32(&this.coCount, -1)
 					this.resume()
 					return
 				}
 
 				this.onEvent(this, e)
 
-				if this.coCount > this.reserveCount {
+				if atomic.LoadInt32(&this.coCount) > this.reserveCount {
 					//co数量超过保留大小，终止
-					this.coCount--
+					atomic.AddInt32(&this.coCount, -1)
 					this.resume()
 					return
 				} else {
@@ -262,7 +264,6 @@ func (this *Scheduler) newCo() {
 			}
 		}()
 	}
-	this.coCount += 10
 }
 
 func (this *Scheduler) runTask(e interface{}) {
@@ -282,29 +283,25 @@ func (this *Scheduler) runTask(e interface{}) {
 
 func (this *Scheduler) Start() {
 
-	this.mtx.Lock()
-	if this.closed || this.started {
-		this.mtx.Unlock()
+	if !atomic.CompareAndSwapInt32(&this.started, 0, 1) {
 		return
 	}
-	this.started = true
-	this.mtx.Unlock()
 
 	for {
 		tt, ele := this.queue.pop()
 		if tt == type_event {
-			if !this.closed {
+			if 0 == atomic.LoadInt32(&this.closed) {
 				this.runTask(ele)
 			}
 		} else {
 			co := ele.(*coroutine)
 			this.current = co
 			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
-			co.Resume(1)
+			co.Resume(struct{}{})
 			this.yild()
 		}
 
-		if this.closed {
+		if 1 == atomic.LoadInt32(&this.closed) {
 			for {
 				co := this.coPool.Pop()
 				if nil != co {
@@ -316,7 +313,7 @@ func (this *Scheduler) Start() {
 			}
 		}
 
-		if this.closed && this.coCount == 0 {
+		if 1 == atomic.LoadInt32(&this.closed) && 0 == atomic.LoadInt32(&this.coCount) {
 			return
 		}
 
@@ -324,9 +321,5 @@ func (this *Scheduler) Start() {
 }
 
 func (this *Scheduler) Close() {
-	this.mtx.Lock()
-	if !this.closed {
-		this.closed = true
-	}
-	this.mtx.Unlock()
+	atomic.CompareAndSwapInt32(&this.closed, 0, 1)
 }
