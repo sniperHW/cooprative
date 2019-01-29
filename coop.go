@@ -102,6 +102,9 @@ func taskGet() *task {
 }
 
 func taskPut(t *task) {
+	t.taskI = nil
+	t.fn = nil
+	t.params = nil
 	taskPool.Put(t)
 }
 
