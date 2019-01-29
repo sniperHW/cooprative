@@ -63,7 +63,7 @@ type TaskI interface {
 
 type task struct {
 	taskI  TaskI
-	fn     reflect.Value
+	fn     *reflect.Value
 	params []interface{}
 }
 
@@ -103,8 +103,8 @@ func taskGet() *task {
 
 func taskPut(t *task) {
 	t.taskI = nil
-	t.fn = nil
 	t.params = nil
+	t.fn = nil //reflect.Zero(reflect.TypeOf(struct{}{}))
 	taskPool.Put(t)
 }
 
@@ -297,7 +297,7 @@ func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
 	}
 
 	tt := taskGet()
-	tt.fn = fnV
+	tt.fn = &fnV
 	tt.params = params
 	this.queue.pushEvent(tt)
 }
@@ -385,6 +385,10 @@ func (this *Scheduler) Start() {
 		}
 
 	}
+}
+
+func (this *Scheduler) IsClosed() bool {
+	return atomic.LoadInt32(&this.closed) == 1
 }
 
 func (this *Scheduler) Close() {
