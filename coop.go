@@ -90,6 +90,21 @@ func (this *task) do() (err error) {
 	return
 }
 
+var taskPool = sync.Pool{
+	New: func() interface{} {
+		return &task{}
+	},
+}
+
+func taskGet() *task {
+	r := taskPool.Get().(*task)
+	return r
+}
+
+func taskPut(t *task) {
+	taskPool.Put(t)
+}
+
 const (
 	type_task = 1
 	type_co   = 2
@@ -262,10 +277,9 @@ func (this *Scheduler) PostTask(t TaskI) {
 		return
 	}
 
-	this.queue.pushEvent(&task{
-		taskI: t,
-	})
-
+	tt := taskGet()
+	tt.taskI = t
+	this.queue.pushEvent(tt)
 }
 
 func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
@@ -279,11 +293,10 @@ func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
 		panic("fn is not a func")
 	}
 
-	this.queue.pushEvent(&task{
-		fn:     fnV,
-		params: params,
-	})
-
+	tt := taskGet()
+	tt.fn = fnV
+	tt.params = params
+	this.queue.pushEvent(tt)
 }
 
 func (this *Scheduler) newCo() {
@@ -301,6 +314,7 @@ func (this *Scheduler) newCo() {
 				}
 
 				e.(*task).do()
+				taskPut(e.(*task))
 
 				if atomic.LoadInt32(&this.coCount) > this.reserveCount {
 					//co数量超过保留大小，终止
