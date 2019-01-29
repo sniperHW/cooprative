@@ -1,28 +1,13 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"github.com/sniperHW/cooprative"
-	"os"
-	"runtime/pprof"
 	"sync/atomic"
 	"time"
 )
 
-var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
-
 func main() {
-
-	flag.Parse()
-	if *cpuprofile != "" {
-		f, err := os.Create(*cpuprofile)
-		if err != nil {
-			fmt.Printf(err.Error())
-		}
-		pprof.StartCPUProfile(f)
-		defer pprof.StopCPUProfile()
-	}
 
 	c1 := int32(0)
 	c2 := int32(0)
@@ -56,17 +41,17 @@ func main() {
 			fmt.Printf("not equal,%d,%d\n", c1, c2)
 		}
 
-		if c2 >= 5000000 {
+		if c2 >= 1000000 {
 			s.Close()
 			return
 		}
 
-		s.Await(time.Sleep, time.Millisecond*time.Duration(100))
+		s.Await(time.Sleep, time.Millisecond*time.Duration(10))
 
 		s.PostFn(fn, 0)
 	}
 
-	for i := 0; i < 10000; i++ {
+	for i := 0; i < 100000; i++ {
 		s.PostFn(fn, 0)
 	}
 

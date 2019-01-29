@@ -205,15 +205,16 @@ func (self *eventQueue) pop() (int, interface{}) {
 
 }
 
+var ReserveCount int32 = 10000
+
 type Scheduler struct {
-	coPool       coList //free coroutine
-	queue        *eventQueue
-	current      *coroutine //当前正在运行的go程序
-	selfCo       coroutine
-	coCount      int32
-	reserveCount int32
-	started      int32
-	closed       int32
+	coPool  coList //free coroutine
+	queue   *eventQueue
+	current *coroutine //当前正在运行的go程序
+	selfCo  coroutine
+	coCount int32
+	started int32
+	closed  int32
 }
 
 func NewScheduler() *Scheduler {
@@ -222,10 +223,9 @@ func NewScheduler() *Scheduler {
 	queue.cond = sync.NewCond(&queue.guard)
 
 	sche := &Scheduler{
-		queue:        queue,
-		reserveCount: 10000,
-		selfCo:       coroutine{signal: make(chan interface{})},
-		coPool:       coList{head: nil, tail: nil, size: 0},
+		queue:  queue,
+		selfCo: coroutine{signal: make(chan interface{})},
+		coPool: coList{head: nil, tail: nil, size: 0},
 	}
 	return sche
 }
@@ -316,7 +316,7 @@ func (this *Scheduler) newCo() {
 				e.(*task).do()
 				taskPut(e.(*task))
 
-				if atomic.LoadInt32(&this.coCount) > this.reserveCount {
+				if atomic.LoadInt32(&this.coCount) > ReserveCount {
 					//co数量超过保留大小，终止
 					atomic.AddInt32(&this.coCount, -1)
 					this.resume()
