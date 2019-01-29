@@ -21,17 +21,16 @@ func (this *coroutine) Resume(data interface{}) {
 	this.signal <- data
 }
 
-func (this *coroutine) Exit() {
-	close(this.signal)
-}
-
 type coList struct {
 	head *coroutine
 	tail *coroutine
 	size int32
+	mtx  sync.Mutex
 }
 
 func (this *coList) PushFront(element *coroutine) {
+	this.mtx.Lock()
+	defer this.mtx.Unlock()
 	element.next = nil
 	if this.head == nil && this.tail == nil {
 		this.head = element
@@ -44,6 +43,8 @@ func (this *coList) PushFront(element *coroutine) {
 }
 
 func (this *coList) Pop() *coroutine {
+	this.mtx.Lock()
+	defer this.mtx.Unlock()
 	if this.head == nil {
 		return nil
 	} else {
@@ -108,11 +109,6 @@ func taskPut(t *task) {
 	taskPool.Put(t)
 }
 
-const (
-	type_task = 1
-	type_co   = 2
-)
-
 type queElement struct {
 	next *queElement
 	data interface{}
@@ -165,9 +161,9 @@ type eventQueue struct {
 	cond   *sync.Cond
 }
 
-func (self *eventQueue) pushEvent(event interface{}) error {
+func (self *eventQueue) pushTask(t *task) error {
 	self.guard.Lock()
-	ele := &queElement{data: event}
+	ele := &queElement{data: t}
 	self.evList.push(ele)
 	self.guard.Unlock()
 	self.cond.Signal()
@@ -183,29 +179,17 @@ func (self *eventQueue) pushCo(co *coroutine) error {
 	return nil
 }
 
-func (self *eventQueue) pop() (int, interface{}) {
-
-	var (
-		tt   int
-		data interface{}
-	)
-
+func (self *eventQueue) pop() interface{} {
+	defer self.guard.Unlock()
 	self.guard.Lock()
 	for self.evList.empty() && self.coList.empty() {
 		self.cond.Wait()
 	}
-
 	if !self.coList.empty() {
-		tt = type_co
-		data = self.coList.pop().data
+		return self.coList.pop().data
 	} else {
-		tt = type_task
-		data = self.evList.pop().data
+		return self.evList.pop().data
 	}
-
-	self.guard.Unlock()
-	return tt, data
-
 }
 
 var ReserveCount int32 = 10000
@@ -282,7 +266,7 @@ func (this *Scheduler) PostTask(t TaskI) {
 
 	tt := taskGet()
 	tt.taskI = t
-	this.queue.pushEvent(tt)
+	this.queue.pushTask(tt)
 }
 
 func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
@@ -299,7 +283,7 @@ func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
 	tt := taskGet()
 	tt.fn = &fnV
 	tt.params = params
-	this.queue.pushEvent(tt)
+	this.queue.pushTask(tt)
 }
 
 func (this *Scheduler) newCo() {
@@ -308,22 +292,15 @@ func (this *Scheduler) newCo() {
 		this.coPool.PushFront(co)
 		atomic.AddInt32(&this.coCount, 1)
 		go func() {
-			for {
-				e := co.Yild()
-				if nil == e {
-					atomic.AddInt32(&this.coCount, -1)
-					this.resume()
-					return
-				}
-
-				e.(*task).do()
-				taskPut(e.(*task))
-
-				if atomic.LoadInt32(&this.coCount) > ReserveCount {
-					//co数量超过保留大小，终止
-					atomic.AddInt32(&this.coCount, -1)
-					this.resume()
-					return
+			defer func() {
+				atomic.AddInt32(&this.coCount, -1)
+				this.resume()
+			}()
+			for t := co.Yild(); t != nil; t = co.Yild() {
+				t.(*task).do()
+				taskPut(t.(*task))
+				if 1 == atomic.LoadInt32(&this.closed) || atomic.LoadInt32(&this.coCount) > ReserveCount {
+					break
 				} else {
 					this.coPool.PushFront(co)
 					this.resume()
@@ -333,7 +310,7 @@ func (this *Scheduler) newCo() {
 	}
 }
 
-func (this *Scheduler) runTask(e interface{}) {
+func (this *Scheduler) runTask(t *task) {
 	for {
 		co := this.coPool.Pop()
 		if nil == co {
@@ -341,7 +318,7 @@ func (this *Scheduler) runTask(e interface{}) {
 		} else {
 			//获取一个空闲的go程，用e将其唤醒，然后将自己投入到等待中
 			this.current = co
-			co.Resume(e)
+			co.Resume(t)
 			this.yild()
 			return
 		}
@@ -355,17 +332,20 @@ func (this *Scheduler) Start() {
 	}
 
 	for {
-		tt, ele := this.queue.pop()
-		if tt == type_task {
-			if 0 == atomic.LoadInt32(&this.closed) {
-				this.runTask(ele)
-			}
-		} else {
+		ele := this.queue.pop()
+		switch ele.(type) {
+		case *coroutine:
 			co := ele.(*coroutine)
 			this.current = co
 			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
 			co.Resume(struct{}{})
 			this.yild()
+			break
+		case *task:
+			if 0 == atomic.LoadInt32(&this.closed) {
+				this.runTask(ele.(*task))
+			}
+			break
 		}
 
 		if 1 == atomic.LoadInt32(&this.closed) {
@@ -378,12 +358,10 @@ func (this *Scheduler) Start() {
 					break
 				}
 			}
+			if 0 == atomic.LoadInt32(&this.coCount) {
+				break
+			}
 		}
-
-		if 1 == atomic.LoadInt32(&this.closed) && 0 == atomic.LoadInt32(&this.coCount) {
-			return
-		}
-
 	}
 }
 
