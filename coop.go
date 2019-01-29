@@ -1,7 +1,9 @@
 package cooprative
 
 import (
+	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -55,9 +57,42 @@ func (this *coList) Pop() *coroutine {
 	}
 }
 
+type TaskI interface {
+	Do()
+}
+
+type task struct {
+	taskI  TaskI
+	fn     reflect.Value
+	params []interface{}
+}
+
+func (this *task) do() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 65535)
+			l := runtime.Stack(buf, false)
+			err = fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
+			fmt.Println(err.Error())
+		}
+	}()
+
+	if nil != this.taskI {
+		this.taskI.Do()
+	} else {
+
+		in := []reflect.Value{}
+		for _, v := range this.params {
+			in = append(in, reflect.ValueOf(v))
+		}
+		this.fn.Call(in)
+	}
+	return
+}
+
 const (
-	type_event = 1
-	type_co    = 2
+	type_task = 1
+	type_co   = 2
 )
 
 type queElement struct {
@@ -146,7 +181,7 @@ func (self *eventQueue) pop() (int, interface{}) {
 		tt = type_co
 		data = self.coList.pop().data
 	} else {
-		tt = type_event
+		tt = type_task
 		data = self.evList.pop().data
 	}
 
@@ -159,26 +194,19 @@ type Scheduler struct {
 	coPool       coList //free coroutine
 	queue        *eventQueue
 	current      *coroutine //当前正在运行的go程序
-	onEvent      func(*Scheduler, interface{})
 	selfCo       coroutine
 	coCount      int32
 	reserveCount int32
 	started      int32
 	closed       int32
-	//mtx          sync.Mutex
 }
 
-func NewScheduler(onEvent func(*Scheduler, interface{})) *Scheduler {
-
-	if nil == onEvent {
-		panic("nil == onEvent")
-	}
+func NewScheduler() *Scheduler {
 
 	queue := &eventQueue{}
 	queue.cond = sync.NewCond(&queue.guard)
 
 	sche := &Scheduler{
-		onEvent:      onEvent,
 		queue:        queue,
 		reserveCount: 10000,
 		selfCo:       coroutine{signal: make(chan interface{})},
@@ -229,11 +257,33 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} 
 
 }
 
-func (this *Scheduler) PostEvent(data interface{}) {
+func (this *Scheduler) PostTask(t TaskI) {
 	if atomic.LoadInt32(&this.closed) == 1 {
 		return
 	}
-	this.queue.pushEvent(data)
+
+	this.queue.pushEvent(&task{
+		taskI: t,
+	})
+
+}
+
+func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
+	if atomic.LoadInt32(&this.closed) == 1 {
+		return
+	}
+
+	fnV := reflect.ValueOf(fn)
+
+	if fnV.Kind() != reflect.Func {
+		panic("fn is not a func")
+	}
+
+	this.queue.pushEvent(&task{
+		fn:     fnV,
+		params: params,
+	})
+
 }
 
 func (this *Scheduler) newCo() {
@@ -250,7 +300,7 @@ func (this *Scheduler) newCo() {
 					return
 				}
 
-				this.onEvent(this, e)
+				e.(*task).do()
 
 				if atomic.LoadInt32(&this.coCount) > this.reserveCount {
 					//co数量超过保留大小，终止
@@ -289,7 +339,7 @@ func (this *Scheduler) Start() {
 
 	for {
 		tt, ele := this.queue.pop()
-		if tt == type_event {
+		if tt == type_task {
 			if 0 == atomic.LoadInt32(&this.closed) {
 				this.runTask(ele)
 			}

@@ -18,10 +18,9 @@ func main() {
 
 	service := os.Args[1]
 
-	s := cooprative.NewScheduler(func(s *cooprative.Scheduler, e interface{}) {
+	s := cooprative.NewScheduler()
 
-		session := e.(kendynet.StreamSession)
-
+	fn := func(session kendynet.StreamSession) {
 		var resp *http.Response
 		var err error
 
@@ -53,8 +52,7 @@ func main() {
 
 		session.SendMessage(kendynet.NewByteBuffer(buff, len(buff)))
 		session.Close("active close", 1)
-
-	})
+	}
 
 	go func() {
 		s.Start()
@@ -71,7 +69,7 @@ func main() {
 					//丢弃所有输入
 				}
 			})
-			s.PostEvent(session)
+			s.PostFn(fn, session)
 		})
 
 		if nil != err {

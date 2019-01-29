@@ -39,7 +39,16 @@ func main() {
 		}
 	}()
 
-	s := cooprative.NewScheduler(func(s *cooprative.Scheduler, e interface{}) {
+	s := cooprative.NewScheduler()
+
+	var fn func(int)
+
+	fn = func(a int) {
+
+		if a != 0 {
+			panic("a != 0")
+		}
+
 		atomic.AddInt32(&c1, 1)
 		atomic.AddInt32(&count, 1)
 		c2++
@@ -54,11 +63,11 @@ func main() {
 
 		s.Await(time.Sleep, time.Millisecond*time.Duration(100))
 
-		s.PostEvent(1)
-	})
+		s.PostFn(fn, 0)
+	}
 
 	for i := 0; i < 10000; i++ {
-		s.PostEvent(1)
+		s.PostFn(fn, 0)
 	}
 
 	s.Start()
