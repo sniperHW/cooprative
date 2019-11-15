@@ -13,7 +13,7 @@ type coroutine struct {
 	signal chan interface{}
 }
 
-func (this *coroutine) Yild() interface{} {
+func (this *coroutine) Yield() interface{} {
 	return <-this.signal
 }
 
@@ -217,8 +217,8 @@ func NewScheduler() *Scheduler {
 	return sche
 }
 
-func (this *Scheduler) yild() {
-	this.selfCo.Yild()
+func (this *Scheduler) yield() {
+	this.selfCo.Yield()
 }
 
 func (this *Scheduler) resume() {
@@ -265,7 +265,7 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} 
 
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	this.queue.pushCo(co)
-	co.Yild()
+	co.Yield()
 
 	return ret
 
@@ -308,7 +308,7 @@ func (this *Scheduler) newCo() {
 				atomic.AddInt32(&this.coCount, -1)
 				this.resume()
 			}()
-			for t := co.Yild(); t != nil; t = co.Yild() {
+			for t := co.Yield(); t != nil; t = co.Yield() {
 				t.(*task).do()
 				taskPut(t.(*task))
 				if 1 == atomic.LoadInt32(&this.closed) || atomic.LoadInt32(&this.coCount) > ReserveCount {
@@ -331,7 +331,7 @@ func (this *Scheduler) runTask(t *task) {
 			//获取一个空闲的go程，用e将其唤醒，然后将自己投入到等待中
 			this.current = co
 			co.Resume(t)
-			this.yild()
+			this.yield()
 			return
 		}
 	}
@@ -351,7 +351,7 @@ func (this *Scheduler) Start() {
 			this.current = co
 			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
 			co.Resume(struct{}{})
-			this.yild()
+			this.yield()
 			break
 		case *task:
 			if 0 == atomic.LoadInt32(&this.closed) {
@@ -365,7 +365,7 @@ func (this *Scheduler) Start() {
 				co := this.coPool.Pop()
 				if nil != co {
 					co.Resume(nil) //发送nil，通告停止
-					this.yild()
+					this.yield()
 				} else {
 					break
 				}
