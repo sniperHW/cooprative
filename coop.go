@@ -281,7 +281,7 @@ func (this *Scheduler) PostTask(t TaskI) {
 	this.queue.pushTask(tt)
 }
 
-func (this *Scheduler) PostFn(fn interface{}, params ...interface{}) {
+func (this *Scheduler) PostFunc(fn interface{}, params ...interface{}) {
 	if atomic.LoadInt32(&this.closed) == 1 {
 		return
 	}

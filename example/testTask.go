@@ -39,7 +39,7 @@ func main() {
 
 	s := cooprative.NewScheduler()
 
-	s.PostFn(func() {
+	s.PostFunc(func() {
 		for !s.IsClosed() {
 			s.Await(time.Sleep, time.Second)
 			fmt.Printf("count:%d\n", count)

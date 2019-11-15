@@ -69,7 +69,7 @@ func main() {
 					//丢弃所有输入
 				}
 			})
-			s.PostFn(fn, session)
+			s.PostFunc(fn, session)
 		})
 
 		if nil != err {

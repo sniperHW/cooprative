@@ -32,7 +32,7 @@ func main() {
 		}
 	}
 
-	s.PostFn(func() {
+	s.PostFunc(func() {
 		for !s.IsClosed() {
 			s.Await(time.Sleep, time.Second)
 			fmt.Printf("count:%d\n", count)
@@ -41,7 +41,7 @@ func main() {
 	})
 
 	for i := 0; i < 10000; i++ {
-		s.PostFn(fn)
+		s.PostFunc(fn)
 	}
 
 	s.Start()
