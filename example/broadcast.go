@@ -31,6 +31,8 @@ func server(service string) {
 		})
 	})
 
+	encoder := codec.NewPbEncoder(4096)
+
 	server, err := listener.New("tcp4", service)
 	if server != nil {
 		go func() {
@@ -48,8 +50,10 @@ func server(service string) {
 						session.Close(ev.Data.(error).Error(), 0)
 					} else {
 						s.PostFunc(func() {
+							//广播，编码一次，直接发送编码后的包，省得每次发送单独编码一次
+							resp, _ := encoder.EnCode(ev.Data.(proto.Message))
 							for s, _ := range clientMap {
-								s.Send(ev.Data.(proto.Message))
+								s.SendMessage(resp)
 							}
 							packetcount += len(clientMap)
 						})
