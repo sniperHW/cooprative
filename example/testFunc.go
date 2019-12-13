@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/sniperHW/cooprative"
+	"runtime"
 	"time"
 )
 
@@ -28,7 +29,7 @@ func main() {
 				return
 			}
 
-			s.Await(time.Sleep, time.Millisecond*time.Duration(10))
+			s.Await(runtime.Gosched)
 		}
 	}
 
