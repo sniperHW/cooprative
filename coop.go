@@ -45,10 +45,17 @@ func (this *task) do() (err error) {
 		this.taskI.Do()
 	} else {
 
-		in := []reflect.Value{}
-		for _, v := range this.params {
-			in = append(in, reflect.ValueOf(v))
+		fnType := (*this.fn).Type()
+
+		in := make([]reflect.Value, len(this.params))
+		for i, v := range this.params {
+			if v == nil {
+				in[i] = reflect.Zero(fnType.In(i))
+			} else {
+				in[i] = reflect.ValueOf(v)
+			}
 		}
+
 		this.fn.Call(in)
 	}
 	return
@@ -162,10 +169,18 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} 
 	if oriF.Kind() != reflect.Func {
 		panic("fn is not a func")
 	}
-	in := []reflect.Value{}
-	for _, v := range args {
-		in = append(in, reflect.ValueOf(v))
+
+	fnType := reflect.TypeOf(fn)
+
+	in := make([]reflect.Value, len(args))
+	for i, v := range args {
+		if v == nil {
+			in[i] = reflect.Zero(fnType.In(i))
+		} else {
+			in[i] = reflect.ValueOf(v)
+		}
 	}
+
 	co := this.current
 	/* 唤醒调度go程，让它可以调度其它任务
 	*  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
