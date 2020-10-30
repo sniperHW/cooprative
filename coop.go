@@ -351,3 +351,46 @@ func (this *Scheduler) IsClosed() bool {
 func (this *Scheduler) Close() {
 	atomic.CompareAndSwapInt32(&this.closed, 0, 1)
 }
+
+var defaultScheduler *Scheduler
+var once sync.Once
+
+func IsClosed() bool {
+	return defaultScheduler.IsClosed()
+}
+
+func Close() {
+	defaultScheduler.Close()
+}
+
+func Await(fn interface{}, args ...interface{}) []interface{} {
+	once.Do(func() {
+		defaultScheduler = NewScheduler()
+		go func() {
+			defaultScheduler.Start()
+		}()
+	})
+	return defaultScheduler.Await(fn, args...)
+}
+
+func PostTask(t TaskI) {
+	once.Do(func() {
+		defaultScheduler = NewScheduler()
+		go func() {
+			defaultScheduler.Start()
+		}()
+	})
+
+	defaultScheduler.PostTask(t)
+}
+
+func PostFunc(fn interface{}, params ...interface{}) {
+	once.Do(func() {
+		defaultScheduler = NewScheduler()
+		go func() {
+			defaultScheduler.Start()
+		}()
+	})
+
+	defaultScheduler.PostFunc(fn, params...)
+}
