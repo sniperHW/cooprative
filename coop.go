@@ -46,13 +46,16 @@ func (this *task) do() (err error) {
 	} else {
 
 		fnType := (*this.fn).Type()
-
-		in := make([]reflect.Value, len(this.params))
-		for i, v := range this.params {
-			if v == nil {
-				in[i] = reflect.Zero(fnType.In(i))
-			} else {
-				in[i] = reflect.ValueOf(v)
+		var in []reflect.Value
+		numIn := fnType.NumIn()
+		if numIn > 0 {
+			in = make([]reflect.Value, numIn)
+			for i := 0; i < numIn; i++ {
+				if i >= len(this.params) || this.params[i] == nil {
+					in[i] = reflect.Zero(fnType.In(i))
+				} else {
+					in[i] = reflect.ValueOf(this.params[i])
+				}
 			}
 		}
 
@@ -172,12 +175,16 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} 
 
 	fnType := reflect.TypeOf(fn)
 
-	in := make([]reflect.Value, len(args))
-	for i, v := range args {
-		if v == nil {
-			in[i] = reflect.Zero(fnType.In(i))
-		} else {
-			in[i] = reflect.ValueOf(v)
+	var in []reflect.Value
+	numIn := fnType.NumIn()
+	if numIn > 0 {
+		in = make([]reflect.Value, numIn)
+		for i := 0; i < numIn; i++ {
+			if i >= len(args) || args[i] == nil {
+				in[i] = reflect.Zero(fnType.In(i))
+			} else {
+				in[i] = reflect.ValueOf(args[i])
+			}
 		}
 	}
 
