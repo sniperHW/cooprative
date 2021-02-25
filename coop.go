@@ -2,9 +2,8 @@ package cooprative
 
 import (
 	"container/list"
-	"fmt"
+	"github.com/sniperHW/kendynet/util"
 	"reflect"
-	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -21,47 +20,26 @@ func (this *coroutine) Resume(data interface{}) {
 	this.signal <- data
 }
 
-type TaskI interface {
-	Do()
-}
-
 type task struct {
-	taskI  TaskI
-	fn     *reflect.Value
+	fn     interface{}
 	params []interface{}
 }
 
-func (this *task) do() (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			buf := make([]byte, 65535)
-			l := runtime.Stack(buf, false)
-			err = fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
-			fmt.Println(err.Error())
-		}
-	}()
+func (this *task) do(s *Scheduler) {
 
-	if nil != this.taskI {
-		this.taskI.Do()
+	var arguments []interface{}
+
+	fnType := reflect.TypeOf(this.fn)
+
+	if fnType.NumIn() > 0 && fnType.In(0) == reflect.TypeOf(s) {
+		arguments = make([]interface{}, len(this.params)+1, len(this.params)+1)
+		arguments[0] = s
+		copy(arguments[1:], this.params)
 	} else {
-
-		fnType := (*this.fn).Type()
-		var in []reflect.Value
-		numIn := fnType.NumIn()
-		if numIn > 0 {
-			in = make([]reflect.Value, numIn)
-			for i := 0; i < numIn; i++ {
-				if i >= len(this.params) || this.params[i] == nil {
-					in[i] = reflect.Zero(fnType.In(i))
-				} else {
-					in[i] = reflect.ValueOf(this.params[i])
-				}
-			}
-		}
-
-		this.fn.Call(in)
+		arguments = this.params
 	}
-	return
+
+	util.ProtectCall(this.fn, arguments...)
 }
 
 var taskPool = sync.Pool{
@@ -76,7 +54,6 @@ func taskGet() *task {
 }
 
 func taskPut(t *task) {
-	t.taskI = nil
 	t.params = nil
 	t.fn = nil
 	taskPool.Put(t)
@@ -132,7 +109,7 @@ type Scheduler struct {
 	coCount      int32
 	reserveCount int32
 	freeList     *list.List
-	started      int32
+	startOnce    sync.Once
 	closed       int32
 }
 
@@ -166,89 +143,29 @@ func (this *Scheduler) resume() {
 	this.selfCo.Resume(struct{}{})
 }
 
-func (this *Scheduler) Await(fn interface{}, args ...interface{}) []interface{} {
-	oriF := reflect.ValueOf(fn)
-
-	if oriF.Kind() != reflect.Func {
-		panic("fn is not a func")
-	}
-
-	fnType := reflect.TypeOf(fn)
-
-	var in []reflect.Value
-	numIn := fnType.NumIn()
-	if numIn > 0 {
-		in = make([]reflect.Value, numIn)
-		for i := 0; i < numIn; i++ {
-			if i >= len(args) || args[i] == nil {
-				in[i] = reflect.Zero(fnType.In(i))
-			} else {
-				in[i] = reflect.ValueOf(args[i])
-			}
-		}
-	}
-
+func (this *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
 	co := this.current
-	/* 唤醒调度go程，让它可以调度其它任务
-	*  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
+	/*  唤醒调度go程，让它可以调度其它任务
+	 *  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
 	 */
 	this.resume()
 
-	var ret []interface{}
-
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				buf := make([]byte, 65535)
-				l := runtime.Stack(buf, false)
-				err := fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
-				fmt.Println(err.Error())
-			}
-		}()
-
-		out := oriF.Call(in)
-
-		if len(out) > 0 {
-			ret = make([]interface{}, 0, len(out))
-			for _, v := range out {
-				ret = append(ret, v.Interface())
-			}
-		}
-	}()
+	ret, err = util.ProtectCall(fn, args...)
 
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	this.queue.pushCo(co)
 	co.Yield()
 
-	return ret
-
+	return
 }
 
-func (this *Scheduler) PostTask(t TaskI) {
-	if atomic.LoadInt32(&this.closed) == 1 {
-		return
+func (this *Scheduler) Run(fn interface{}, params ...interface{}) {
+	if atomic.LoadInt32(&this.closed) == 0 {
+		tt := taskGet()
+		tt.fn = fn
+		tt.params = params
+		this.queue.pushTask(tt)
 	}
-
-	tt := taskGet()
-	tt.taskI = t
-	this.queue.pushTask(tt)
-}
-
-func (this *Scheduler) PostFunc(fn interface{}, params ...interface{}) {
-	if atomic.LoadInt32(&this.closed) == 1 {
-		return
-	}
-
-	fnV := reflect.ValueOf(fn)
-
-	if fnV.Kind() != reflect.Func {
-		panic("fn is not a func")
-	}
-
-	tt := taskGet()
-	tt.fn = &fnV
-	tt.params = params
-	this.queue.pushTask(tt)
 }
 
 func (this *Scheduler) getFree() *coroutine {
@@ -265,7 +182,7 @@ func (this *Scheduler) getFree() *coroutine {
 				this.resume()
 			}()
 			for t := co.Yield(); t != nil; t = co.Yield() {
-				t.(*task).do()
+				t.(*task).do(this)
 				taskPut(t.(*task))
 				if 1 == atomic.LoadInt32(&this.closed) || atomic.LoadInt32(&this.coCount) > this.reserveCount {
 					break
@@ -294,54 +211,51 @@ func (this *Scheduler) runTask(t *task) {
 }
 
 func (this *Scheduler) Start() {
-
-	if !atomic.CompareAndSwapInt32(&this.started, 0, 1) {
-		return
-	}
-
-	for {
-		ele := this.queue.pop()
-		switch ele.(type) {
-		case *coroutine:
-			co := ele.(*coroutine)
-			this.current = co
-			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
-			co.Resume(struct{}{})
-			this.yield()
-			break
-		case *task:
-			if 0 == atomic.LoadInt32(&this.closed) {
-				this.runTask(ele.(*task))
+	this.startOnce.Do(func() {
+		for {
+			ele := this.queue.pop()
+			switch ele.(type) {
+			case *coroutine:
+				co := ele.(*coroutine)
+				this.current = co
+				//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
+				co.Resume(struct{}{})
+				this.yield()
+				break
+			case *task:
+				if 0 == atomic.LoadInt32(&this.closed) {
+					this.runTask(ele.(*task))
+				}
+				break
 			}
-			break
-		}
 
-		if 1 == atomic.LoadInt32(&this.closed) {
+			if 1 == atomic.LoadInt32(&this.closed) {
 
-			for {
-				co := func() *coroutine {
-					this.Lock()
-					defer this.Unlock()
-					if this.freeList.Len() == 0 {
-						return nil
+				for {
+					co := func() *coroutine {
+						this.Lock()
+						defer this.Unlock()
+						if this.freeList.Len() == 0 {
+							return nil
+						} else {
+							return this.freeList.Remove(this.freeList.Front()).(*coroutine)
+						}
+					}()
+
+					if nil != co {
+						co.Resume(nil) //发送nil，通告停止
+						this.yield()
 					} else {
-						return this.freeList.Remove(this.freeList.Front()).(*coroutine)
+						break
 					}
-				}()
+				}
 
-				if nil != co {
-					co.Resume(nil) //发送nil，通告停止
-					this.yield()
-				} else {
+				if 0 == atomic.LoadInt32(&this.coCount) {
 					break
 				}
 			}
-
-			if 0 == atomic.LoadInt32(&this.coCount) {
-				break
-			}
 		}
-	}
+	})
 }
 
 func (this *Scheduler) IsClosed() bool {
@@ -355,15 +269,7 @@ func (this *Scheduler) Close() {
 var defaultScheduler *Scheduler
 var once sync.Once
 
-func IsClosed() bool {
-	return defaultScheduler.IsClosed()
-}
-
-func Close() {
-	defaultScheduler.Close()
-}
-
-func Await(fn interface{}, args ...interface{}) []interface{} {
+func Await(fn interface{}, args ...interface{}) ([]interface{}, error) {
 	once.Do(func() {
 		defaultScheduler = NewScheduler()
 		go func() {
@@ -373,7 +279,7 @@ func Await(fn interface{}, args ...interface{}) []interface{} {
 	return defaultScheduler.Await(fn, args...)
 }
 
-func PostTask(t TaskI) {
+func Run(fn interface{}, params ...interface{}) {
 	once.Do(func() {
 		defaultScheduler = NewScheduler()
 		go func() {
@@ -381,16 +287,5 @@ func PostTask(t TaskI) {
 		}()
 	})
 
-	defaultScheduler.PostTask(t)
-}
-
-func PostFunc(fn interface{}, params ...interface{}) {
-	once.Do(func() {
-		defaultScheduler = NewScheduler()
-		go func() {
-			defaultScheduler.Start()
-		}()
-	})
-
-	defaultScheduler.PostFunc(fn, params...)
+	defaultScheduler.Run(fn, params...)
 }

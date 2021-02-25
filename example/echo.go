@@ -15,7 +15,7 @@ func onNewClient(conn net.Conn) {
 
 	recvBuff := make([]byte, 65535/4)
 	for {
-		ret := cooprative.Await(conn.Read, recvBuff)
+		ret, _ := cooprative.Await(conn.Read, recvBuff)
 		if nil != ret[1] {
 			conn.Close()
 			fmt.Println("client close")
@@ -52,21 +52,21 @@ func listen() {
 			}
 
 		} else {
-			cooprative.PostFunc(onNewClient, conn)
+			cooprative.Run(onNewClient, conn)
 		}
 	}
 }
 
 func main() {
 
-	cooprative.PostFunc(func() {
+	cooprative.Run(func() {
 		for {
 			cooprative.Await(time.Sleep, time.Second)
 			fmt.Printf("totalRecv:%dmb\n", totalRecv/1024/1024)
 		}
 	})
 
-	cooprative.PostFunc(listen)
+	cooprative.Run(listen)
 
 	sigStop := make(chan bool)
 	_, _ = <-sigStop

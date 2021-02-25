@@ -49,7 +49,7 @@ func Benchmark2(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		die := make(chan struct{})
-		sc.PostFunc(func() {
+		sc.Run(func() {
 			sc.Await(func() {
 			})
 			close(die)
@@ -72,7 +72,7 @@ func Benchmark3(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		wait.Add(1)
-		sc.PostFunc(func() {
+		sc.Run(func() {
 			sc.Await(func() {
 			})
 			wait.Done()

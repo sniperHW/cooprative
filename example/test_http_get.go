@@ -24,7 +24,7 @@ func main() {
 		var resp *http.Response
 		var err error
 
-		ret := s.Await(http.Get, "http://www.01happy.com/demo/accept.php?id=1")
+		ret, _ := s.Await(http.Get, "http://www.01happy.com/demo/accept.php?id=1")
 
 		if nil != ret[0] {
 			resp = ret[0].(*http.Response)
@@ -51,7 +51,7 @@ func main() {
 		}
 
 		session.SendMessage(kendynet.NewByteBuffer(buff, len(buff)))
-		session.Close("active close", 1)
+		session.Close(nil, 1)
 	}
 
 	go func() {
@@ -62,14 +62,7 @@ func main() {
 	if server != nil {
 		fmt.Printf("server running on:%s\n", service)
 		err = server.Serve(func(session kendynet.StreamSession) {
-			session.Start(func(event *kendynet.Event) {
-				if event.EventType == kendynet.EventTypeError {
-					event.Session.Close(event.Data.(error).Error(), 0)
-				} else {
-					//丢弃所有输入
-				}
-			})
-			s.PostFunc(fn, session)
+			s.Run(fn, session)
 		})
 
 		if nil != err {

@@ -22,14 +22,12 @@ func server(service string) {
 
 	clientMap := make(map[kendynet.StreamSession]bool)
 
-	s := cooprative.NewScheduler()
-
-	timer.Repeat(time.Second, nil, func(_ *timer.Timer) {
-		s.PostFunc(func() {
+	timer.Repeat(time.Second, func(_ *timer.Timer, _ interface{}) {
+		cooprative.Run(func() {
 			fmt.Printf("clientcount:%d,packetcount:%d\n", len(clientMap), packetcount)
 			packetcount = 0
 		})
-	})
+	}, nil)
 
 	encoder := codec.NewPbEncoder(4096)
 
@@ -39,28 +37,25 @@ func server(service string) {
 			fmt.Printf("server running on:%s\n", service)
 			err = server.Serve(func(session kendynet.StreamSession) {
 				session.SetEncoder(codec.NewPbEncoder(4096))
-				session.SetReceiver(codec.NewPBReceiver(4096))
-				session.SetCloseCallBack(func(sess kendynet.StreamSession, reason string) {
-					s.PostFunc(func() {
+				session.SetInBoundProcessor(codec.NewPBReceiver(4096))
+				session.SetCloseCallBack(func(sess kendynet.StreamSession, reason error) {
+					cooprative.Run(func() {
 						delete(clientMap, session)
 					})
 				})
-				session.Start(func(ev *kendynet.Event) {
-					if ev.EventType == kendynet.EventTypeError {
-						session.Close(ev.Data.(error).Error(), 0)
-					} else {
-						s.PostFunc(func() {
-							//广播，编码一次，直接发送编码后的包，省得每次发送单独编码一次
-							resp, _ := encoder.EnCode(ev.Data.(proto.Message))
-							for s, _ := range clientMap {
-								s.SendMessage(resp)
-							}
-							packetcount += len(clientMap)
-						})
-					}
+
+				session.BeginRecv(func(sess kendynet.StreamSession, m interface{}) {
+					cooprative.Run(func() {
+						//广播，编码一次，直接发送编码后的包，省得每次发送单独编码一次
+						resp, _ := encoder.EnCode(m.(proto.Message))
+						for sess, _ := range clientMap {
+							sess.SendMessage(resp)
+						}
+						packetcount += len(clientMap)
+					})
 				})
 
-				s.PostFunc(func() {
+				cooprative.Run(func() {
 					clientMap[session] = true
 				})
 			})
@@ -69,8 +64,6 @@ func server(service string) {
 				fmt.Printf("TcpServer start failed %s\n", err)
 			}
 		}()
-
-		s.Start()
 
 	} else {
 		fmt.Printf("NewTcpServer failed %s\n", err)
@@ -93,20 +86,14 @@ func client(service string, count int) {
 		} else {
 			selfID := i + 1
 			session.SetEncoder(codec.NewPbEncoder(4096))
-			session.SetReceiver(codec.NewPBReceiver(4096))
-			session.SetCloseCallBack(func(sess kendynet.StreamSession, reason string) {
-				fmt.Printf("client client close:%s\n", reason)
-			})
-			session.Start(func(event *kendynet.Event) {
-				if event.EventType == kendynet.EventTypeError {
-					event.Session.Close(event.Data.(error).Error(), 0)
-				} else {
-					msg := event.Data.(*testproto.BrocastPingpong)
-					if msg.GetId() == int64(selfID) {
-						event.Session.Send(event.Data.(proto.Message))
-					}
+			session.SetInBoundProcessor(codec.NewPBReceiver(4096))
+			session.BeginRecv(func(s kendynet.StreamSession, m interface{}) {
+				msg := m.(*testproto.BrocastPingpong)
+				if msg.GetId() == int64(selfID) {
+					s.Send(m.(proto.Message))
 				}
 			})
+
 			//send the first messge
 			o := &testproto.BrocastPingpong{}
 			o.Id = proto.Int64(int64(selfID))
