@@ -41,7 +41,7 @@ func listen() {
 	}
 
 	for {
-		ret := cooprative.Await(listener.Accept)
+		ret, _ := cooprative.Await(listener.Accept)
 		conn, err := ret[0].(net.Conn), ret[1]
 
 		if err != nil {

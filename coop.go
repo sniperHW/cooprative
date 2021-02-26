@@ -68,6 +68,7 @@ type eventQueue struct {
 	coList *list.List
 	guard  sync.Mutex
 	cond   *sync.Cond
+	closed bool
 }
 
 func (self *eventQueue) pushTask(t *task) error {
@@ -155,7 +156,6 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interfa
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	this.queue.pushCo(co)
 	co.Yield()
-
 	return
 }
 
@@ -232,26 +232,22 @@ func (this *Scheduler) Start() {
 			if 1 == atomic.LoadInt32(&this.closed) {
 
 				for {
-					co := func() *coroutine {
-						this.Lock()
-						defer this.Unlock()
-						if this.freeList.Len() == 0 {
-							return nil
-						} else {
-							return this.freeList.Remove(this.freeList.Front()).(*coroutine)
-						}
-					}()
-
+					var co *coroutine
+					this.Lock()
+					if this.freeList.Len() > 0 {
+						co = this.freeList.Remove(this.freeList.Front()).(*coroutine)
+					}
+					this.Unlock()
 					if nil != co {
 						co.Resume(nil) //发送nil，通告停止
 						this.yield()
 					} else {
-						break
+						return
 					}
 				}
 
 				if 0 == atomic.LoadInt32(&this.coCount) {
-					break
+					return
 				}
 			}
 		}
@@ -270,12 +266,6 @@ var defaultScheduler *Scheduler
 var once sync.Once
 
 func Await(fn interface{}, args ...interface{}) ([]interface{}, error) {
-	once.Do(func() {
-		defaultScheduler = NewScheduler()
-		go func() {
-			defaultScheduler.Start()
-		}()
-	})
 	return defaultScheduler.Await(fn, args...)
 }
 
