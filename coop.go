@@ -2,11 +2,81 @@ package cooprative
 
 import (
 	"container/list"
-	"github.com/sniperHW/kendynet/util"
+	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 )
+
+func Call(fn interface{}, args ...interface{}) (result []interface{}) {
+	fnType := reflect.TypeOf(fn)
+	fnValue := reflect.ValueOf(fn)
+	numIn := fnType.NumIn()
+
+	var out []reflect.Value
+	if numIn == 0 {
+		out = fnValue.Call(nil)
+	} else {
+		argsLength := len(args)
+		argumentIn := numIn
+		if fnType.IsVariadic() {
+			argumentIn--
+		}
+
+		if argsLength < argumentIn {
+			panic("with too few input arguments")
+		}
+
+		/*if !fnType.IsVariadic() && argsLength > argumentIn {
+			panic("ProtectCall with too many input arguments")
+		}*/
+
+		in := make([]reflect.Value, numIn)
+		for i := 0; i < argumentIn; i++ {
+			if args[i] == nil {
+				in[i] = reflect.Zero(fnType.In(i))
+			} else {
+				in[i] = reflect.ValueOf(args[i])
+			}
+		}
+
+		if fnType.IsVariadic() {
+			m := argsLength - argumentIn
+			slice := reflect.MakeSlice(fnType.In(numIn-1), m, m)
+			in[numIn-1] = slice
+			for i := 0; i < m; i++ {
+				x := args[argumentIn+i]
+				if x != nil {
+					slice.Index(i).Set(reflect.ValueOf(x))
+				}
+			}
+			out = fnValue.CallSlice(in)
+		} else {
+			out = fnValue.Call(in)
+		}
+	}
+
+	if out != nil && len(out) > 0 {
+		result = make([]interface{}, len(out))
+		for i, v := range out {
+			result[i] = v.Interface()
+		}
+	}
+	return
+}
+
+func ProtectCall(fn interface{}, args ...interface{}) (result []interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 65535)
+			l := runtime.Stack(buf, false)
+			err = fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
+		}
+	}()
+	result = Call(fn, args...)
+	return
+}
 
 type coroutine struct {
 	signal chan interface{}
@@ -39,7 +109,7 @@ func (this *task) do(s *Scheduler) {
 		arguments = this.params
 	}
 
-	util.ProtectCall(this.fn, arguments...)
+	ProtectCall(this.fn, arguments...)
 }
 
 var taskPool = sync.Pool{
@@ -151,7 +221,7 @@ func (this *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interfa
 	 */
 	this.resume()
 
-	ret, err = util.ProtectCall(fn, args...)
+	ret, err = ProtectCall(fn, args...)
 
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	this.queue.pushCo(co)
