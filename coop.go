@@ -57,7 +57,7 @@ func Call(fn interface{}, args ...interface{}) (result []interface{}) {
 		}
 	}
 
-	if out != nil && len(out) > 0 {
+	if len(out) > 0 {
 		result = make([]interface{}, len(out))
 		for i, v := range out {
 			result[i] = v.Interface()
@@ -82,12 +82,12 @@ type coroutine struct {
 	signal chan interface{}
 }
 
-func (this *coroutine) Yield() interface{} {
-	return <-this.signal
+func (co *coroutine) Yield() interface{} {
+	return <-co.signal
 }
 
-func (this *coroutine) Resume(data interface{}) {
-	this.signal <- data
+func (co *coroutine) Resume(data interface{}) {
+	co.signal <- data
 }
 
 type task struct {
@@ -95,21 +95,21 @@ type task struct {
 	params []interface{}
 }
 
-func (this *task) do(s *Scheduler) {
+func (t *task) do(s *Scheduler) {
 
 	var arguments []interface{}
 
-	fnType := reflect.TypeOf(this.fn)
+	fnType := reflect.TypeOf(t.fn)
 
 	if fnType.NumIn() > 0 && fnType.In(0) == reflect.TypeOf(s) {
-		arguments = make([]interface{}, len(this.params)+1, len(this.params)+1)
+		arguments = make([]interface{}, len(t.params)+1)
 		arguments[0] = s
-		copy(arguments[1:], this.params)
+		copy(arguments[1:], t.params)
 	} else {
-		arguments = this.params
+		arguments = t.params
 	}
 
-	ProtectCall(this.fn, arguments...)
+	ProtectCall(t.fn, arguments...)
 }
 
 var taskPool = sync.Pool{
@@ -138,37 +138,37 @@ type eventQueue struct {
 	coList *list.List
 	guard  sync.Mutex
 	cond   *sync.Cond
-	closed bool
+	//closed bool
 }
 
-func (self *eventQueue) pushTask(t *task) error {
-	self.guard.Lock()
-	self.evList.PushBack(t)
-	self.guard.Unlock()
-	self.cond.Signal()
+func (q *eventQueue) pushTask(t *task) error {
+	q.guard.Lock()
+	q.evList.PushBack(t)
+	q.guard.Unlock()
+	q.cond.Signal()
 	return nil
 }
 
-func (self *eventQueue) pushCo(co *coroutine) error {
-	self.guard.Lock()
-	self.coList.PushBack(co)
-	self.guard.Unlock()
-	self.cond.Signal()
+func (q *eventQueue) pushCo(co *coroutine) error {
+	q.guard.Lock()
+	q.coList.PushBack(co)
+	q.guard.Unlock()
+	q.cond.Signal()
 	return nil
 }
 
-func (self *eventQueue) pop() interface{} {
-	defer self.guard.Unlock()
-	self.guard.Lock()
+func (q *eventQueue) pop() interface{} {
+	defer q.guard.Unlock()
+	q.guard.Lock()
 
-	for self.evList.Len() == 0 && self.coList.Len() == 0 {
-		self.cond.Wait()
+	for q.evList.Len() == 0 && q.coList.Len() == 0 {
+		q.cond.Wait()
 	}
 
-	if self.coList.Len() > 0 {
-		return self.coList.Remove(self.coList.Front())
+	if q.coList.Len() > 0 {
+		return q.coList.Remove(q.coList.Front())
 	} else {
-		return self.evList.Remove(self.evList.Front())
+		return q.evList.Remove(q.evList.Front())
 	}
 }
 
@@ -206,59 +206,59 @@ func NewScheduler(reserveCount ...int32) *Scheduler {
 	return sche
 }
 
-func (this *Scheduler) yield() {
-	this.selfCo.Yield()
+func (sc *Scheduler) yield() {
+	sc.selfCo.Yield()
 }
 
-func (this *Scheduler) resume() {
-	this.selfCo.Resume(struct{}{})
+func (sc *Scheduler) resume() {
+	sc.selfCo.Resume(struct{}{})
 }
 
-func (this *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
-	co := this.current
+func (sc *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
+	co := sc.current
 	/*  唤醒调度go程，让它可以调度其它任务
 	 *  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
 	 */
-	this.resume()
+	sc.resume()
 
 	ret, err = ProtectCall(fn, args...)
 
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
-	this.queue.pushCo(co)
+	sc.queue.pushCo(co)
 	co.Yield()
 	return
 }
 
-func (this *Scheduler) Run(fn interface{}, params ...interface{}) {
-	if atomic.LoadInt32(&this.closed) == 0 {
+func (sc *Scheduler) Run(fn interface{}, params ...interface{}) {
+	if atomic.LoadInt32(&sc.closed) == 0 {
 		tt := taskGet()
 		tt.fn = fn
 		tt.params = params
-		this.queue.pushTask(tt)
+		sc.queue.pushTask(tt)
 	}
 }
 
-func (this *Scheduler) getFree() *coroutine {
-	this.Lock()
-	defer this.Unlock()
-	if this.freeList.Len() != 0 {
-		return this.freeList.Remove(this.freeList.Front()).(*coroutine)
+func (sc *Scheduler) getFree() *coroutine {
+	sc.Lock()
+	defer sc.Unlock()
+	if sc.freeList.Len() != 0 {
+		return sc.freeList.Remove(sc.freeList.Front()).(*coroutine)
 	} else {
 		co := &coroutine{signal: make(chan interface{})}
-		atomic.AddInt32(&this.coCount, 1)
+		atomic.AddInt32(&sc.coCount, 1)
 		go func() {
 			defer func() {
-				atomic.AddInt32(&this.coCount, -1)
-				this.resume()
+				atomic.AddInt32(&sc.coCount, -1)
+				sc.resume()
 			}()
 			for t := co.Yield(); t != nil; t = co.Yield() {
-				t.(*task).do(this)
+				t.(*task).do(sc)
 				taskPut(t.(*task))
-				if 1 == atomic.LoadInt32(&this.closed) || atomic.LoadInt32(&this.coCount) > this.reserveCount {
+				if 1 == atomic.LoadInt32(&sc.closed) || atomic.LoadInt32(&sc.coCount) > sc.reserveCount {
 					break
 				} else {
-					this.putFree(co)
-					this.resume()
+					sc.putFree(co)
+					sc.resume()
 				}
 			}
 		}()
@@ -266,70 +266,62 @@ func (this *Scheduler) getFree() *coroutine {
 	}
 }
 
-func (this *Scheduler) putFree(co *coroutine) {
-	this.Lock()
-	defer this.Unlock()
-	this.freeList.PushFront(co)
+func (sc *Scheduler) putFree(co *coroutine) {
+	sc.Lock()
+	defer sc.Unlock()
+	sc.freeList.PushFront(co)
 }
 
-func (this *Scheduler) runTask(t *task) {
-	co := this.getFree()
-	this.current = co
+func (sc *Scheduler) runTask(t *task) {
+	co := sc.getFree()
+	sc.current = co
 	co.Resume(t)
-	this.yield()
+	sc.yield()
 	return
 }
 
-func (this *Scheduler) Start() {
-	this.startOnce.Do(func() {
+func (sc *Scheduler) Start() {
+	sc.startOnce.Do(func() {
 		for {
-			ele := this.queue.pop()
-			switch ele.(type) {
+			ele := sc.queue.pop()
+			switch o := ele.(type) {
 			case *coroutine:
-				co := ele.(*coroutine)
-				this.current = co
+				sc.current = o
 				//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
-				co.Resume(struct{}{})
-				this.yield()
-				break
+				o.Resume(struct{}{})
+				sc.yield()
 			case *task:
-				if 0 == atomic.LoadInt32(&this.closed) {
-					this.runTask(ele.(*task))
+				if atomic.LoadInt32(&sc.closed) == 0 {
+					sc.runTask(o)
 				}
-				break
 			}
 
-			if 1 == atomic.LoadInt32(&this.closed) {
-
+			if atomic.LoadInt32(&sc.closed) == 1 {
 				for {
 					var co *coroutine
-					this.Lock()
-					if this.freeList.Len() > 0 {
-						co = this.freeList.Remove(this.freeList.Front()).(*coroutine)
+					sc.Lock()
+					if sc.freeList.Len() > 0 {
+						co = sc.freeList.Remove(sc.freeList.Front()).(*coroutine)
 					}
-					this.Unlock()
+					sc.Unlock()
 					if nil != co {
 						co.Resume(nil) //发送nil，通告停止
-						this.yield()
+						sc.yield()
 					} else {
 						return
 					}
-				}
-
-				if 0 == atomic.LoadInt32(&this.coCount) {
-					return
 				}
 			}
 		}
 	})
 }
 
-func (this *Scheduler) IsClosed() bool {
-	return atomic.LoadInt32(&this.closed) == 1
+func (sc *Scheduler) IsClosed() bool {
+	return atomic.LoadInt32(&sc.closed) == 1
 }
 
-func (this *Scheduler) Close() {
-	atomic.CompareAndSwapInt32(&this.closed, 0, 1)
+func (sc *Scheduler) Close() {
+	atomic.CompareAndSwapInt32(&sc.closed, 0, 1)
 }
 
 var defaultScheduler *Scheduler
