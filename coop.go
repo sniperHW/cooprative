@@ -28,9 +28,9 @@ func Call(fn interface{}, args ...interface{}) (result []interface{}) {
 			panic("with too few input arguments")
 		}
 
-		/*if !fnType.IsVariadic() && argsLength > argumentIn {
-			panic("ProtectCall with too many input arguments")
-		}*/
+		if !fnType.IsVariadic() && argsLength > argumentIn {
+			panic("with too many input arguments")
+		}
 
 		in := make([]reflect.Value, numIn)
 		for i := 0; i < argumentIn; i++ {
@@ -133,23 +133,22 @@ func taskPut(t *task) {
  *  event和co使用单独队列，优先返回co队列中的元素，提高co的处理优先级
  */
 
-type eventQueue struct {
-	evList *list.List
-	coList *list.List
-	guard  sync.Mutex
-	cond   *sync.Cond
-	//closed bool
+type queue struct {
+	taskList *list.List
+	coList   *list.List
+	guard    sync.Mutex
+	cond     *sync.Cond
 }
 
-func (q *eventQueue) pushTask(t *task) error {
+func (q *queue) pushTask(t *task) error {
 	q.guard.Lock()
-	q.evList.PushBack(t)
+	q.taskList.PushBack(t)
 	q.guard.Unlock()
 	q.cond.Signal()
 	return nil
 }
 
-func (q *eventQueue) pushCo(co *coroutine) error {
+func (q *queue) pushCo(co *coroutine) error {
 	q.guard.Lock()
 	q.coList.PushBack(co)
 	q.guard.Unlock()
@@ -157,24 +156,24 @@ func (q *eventQueue) pushCo(co *coroutine) error {
 	return nil
 }
 
-func (q *eventQueue) pop() interface{} {
+func (q *queue) pop() interface{} {
 	defer q.guard.Unlock()
 	q.guard.Lock()
 
-	for q.evList.Len() == 0 && q.coList.Len() == 0 {
+	for q.taskList.Len() == 0 && q.coList.Len() == 0 {
 		q.cond.Wait()
 	}
 
 	if q.coList.Len() > 0 {
 		return q.coList.Remove(q.coList.Front())
 	} else {
-		return q.evList.Remove(q.evList.Front())
+		return q.taskList.Remove(q.taskList.Front())
 	}
 }
 
 type Scheduler struct {
 	sync.Mutex
-	queue        *eventQueue
+	queue        *queue
 	current      *coroutine //当前正在运行的go程序
 	selfCo       coroutine
 	coCount      int32
@@ -186,9 +185,9 @@ type Scheduler struct {
 
 func NewScheduler(reserveCount ...int32) *Scheduler {
 
-	queue := &eventQueue{
-		evList: list.New(),
-		coList: list.New(),
+	queue := &queue{
+		taskList: list.New(),
+		coList:   list.New(),
 	}
 	queue.cond = sync.NewCond(&queue.guard)
 
@@ -254,7 +253,7 @@ func (sc *Scheduler) getFree() *coroutine {
 			for t := co.Yield(); t != nil; t = co.Yield() {
 				t.(*task).do(sc)
 				taskPut(t.(*task))
-				if 1 == atomic.LoadInt32(&sc.closed) || atomic.LoadInt32(&sc.coCount) > sc.reserveCount {
+				if atomic.LoadInt32(&sc.closed) == 1 || atomic.LoadInt32(&sc.coCount) > sc.reserveCount {
 					break
 				} else {
 					sc.putFree(co)
@@ -277,7 +276,6 @@ func (sc *Scheduler) runTask(t *task) {
 	sc.current = co
 	co.Resume(t)
 	sc.yield()
-	return
 }
 
 func (sc *Scheduler) Start() {
@@ -334,9 +332,7 @@ func Await(fn interface{}, args ...interface{}) ([]interface{}, error) {
 func Run(fn interface{}, params ...interface{}) {
 	once.Do(func() {
 		defaultScheduler = NewScheduler()
-		go func() {
-			defaultScheduler.Start()
-		}()
+		go defaultScheduler.Start()
 	})
 
 	defaultScheduler.Run(fn, params...)
