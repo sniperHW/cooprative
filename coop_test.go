@@ -4,6 +4,7 @@ package cooprative
 //go tool cover -html=coverage.out
 import (
 	//"github.com/stretchr/testify/assert"
+	"context"
 	"fmt"
 	"runtime"
 	"testing"
@@ -13,8 +14,8 @@ import (
 func TestCoop(t *testing.T) {
 
 	{
-		s := NewScheduler()
-		s.Run(func(_ *Scheduler) {
+		s := NewScheduler(SchedulerOption{TaskQueueCap: 4096})
+		s.RunTask(context.Background(), func() {
 			s.Close()
 			s.Await(time.Sleep, time.Second)
 			fmt.Println("awake")
@@ -32,7 +33,7 @@ func TestCoop(t *testing.T) {
 
 		die := make(chan struct{})
 
-		Run(func(_ *Scheduler) {
+		RunTask(context.Background(), func() {
 			for !ok {
 				Await(time.Sleep, time.Second)
 				fmt.Printf("count:%d\n", count)
@@ -42,7 +43,7 @@ func TestCoop(t *testing.T) {
 		})
 
 		for i := 0; i < 10000; i++ {
-			Run(func() {
+			RunTask(context.Background(), func() {
 				for {
 					c1++
 					count++

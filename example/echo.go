@@ -1,13 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"github.com/sniperHW/cooprative"
 	"net"
 	"time"
+
+	"github.com/sniperHW/cooprative"
 )
 
-//totalRecv的访问在单线程环境下，无需原子操作
+// totalRecv的访问在单线程环境下，无需原子操作
 var totalRecv int
 
 func onNewClient(conn net.Conn) {
@@ -52,21 +54,23 @@ func listen() {
 			}
 
 		} else {
-			cooprative.Run(onNewClient, conn)
+			cooprative.RunTask(context.Background(), func() {
+				onNewClient(conn)
+			})
 		}
 	}
 }
 
 func main() {
 
-	cooprative.Run(func() {
+	cooprative.RunTask(context.Background(), func() {
 		for {
 			cooprative.Await(time.Sleep, time.Second)
 			fmt.Printf("totalRecv:%dmb\n", totalRecv/1024/1024)
 		}
 	})
 
-	cooprative.Run(listen)
+	cooprative.RunTask(context.Background(), listen)
 
 	sigStop := make(chan bool)
 	_, _ = <-sigStop

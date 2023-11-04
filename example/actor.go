@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -42,7 +43,7 @@ func (a *actor) Start() {
 				a.sc.Close()
 				break
 			case fn := <-a.mailBox:
-				a.sc.Run(fn)
+				a.sc.RunTask(context.Background(), fn)
 			}
 		}
 	}()
@@ -50,7 +51,7 @@ func (a *actor) Start() {
 
 func main() {
 	a := &actor{
-		sc:      cooprative.NewScheduler(8),
+		sc:      cooprative.NewScheduler(cooprative.SchedulerOption{TaskQueueCap: 64}),
 		mailBox: make(chan func(), 64),
 		die:     make(chan struct{}),
 	}
@@ -58,7 +59,7 @@ func main() {
 	a.Start()
 
 	b := &actor{
-		sc:      cooprative.NewScheduler(8),
+		sc:      cooprative.NewScheduler(cooprative.SchedulerOption{TaskQueueCap: 64}),
 		mailBox: make(chan func(), 64),
 		die:     make(chan struct{}),
 	}

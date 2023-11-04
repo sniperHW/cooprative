@@ -1,15 +1,218 @@
 package cooprative
 
 import (
-	"container/list"
+	"context"
+	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 )
 
-func Call(fn interface{}, args ...interface{}) (result []interface{}) {
+type goroutine struct {
+	signal chan *task
+	async  bool
+}
+
+func (co *goroutine) yield() *task {
+	return <-co.signal
+}
+
+func (co *goroutine) resume(data *task) {
+	co.signal <- data
+}
+
+type task struct {
+	fn func()
+	sc *Scheduler
+}
+
+func (t *task) do() {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 65535)
+			l := runtime.Stack(buf, false)
+			err := fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
+			log.Println(err)
+		}
+	}()
+	t.fn()
+}
+
+type Scheduler struct {
+	sync.Mutex
+	goroutine
+	taskQueue  chan task
+	awakeQueue chan *goroutine
+	current    *goroutine
+	die        chan struct{}
+	startOnce  sync.Once
+	closeOnce  sync.Once
+	awaitCount int32
+	closeCh    chan struct{}
+}
+
+type SchedulerOption struct {
+	TaskQueueCap int //任务队列容量
+}
+
+func NewScheduler(opt SchedulerOption) *Scheduler {
+	return &Scheduler{
+		goroutine: goroutine{
+			signal: make(chan *task),
+		},
+		taskQueue:  make(chan task, opt.TaskQueueCap),
+		awakeQueue: make(chan *goroutine, 64),
+		die:        make(chan struct{}),
+		closeCh:    make(chan struct{}),
+	}
+}
+
+func (sc *Scheduler) awakeGo(gotine *goroutine) {
+	sc.awakeQueue <- gotine
+}
+
+func (sc *Scheduler) RunTask(ctx context.Context, fn func()) error {
+	select {
+	case sc.taskQueue <- task{sc: sc, fn: fn}:
+		return nil
+	case <-sc.die:
+		return errors.New("Scheduler closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (sc *Scheduler) onDie() {
+	//处理taskQueue中剩余任务，等待awaitCount变成0
+	for atomic.LoadInt32(&sc.awaitCount) > 0 || len(sc.taskQueue) > 0 {
+		select {
+		case gotine := <-sc.awakeQueue:
+			sc.current = gotine
+			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
+			gotine.resume(nil)
+			atomic.AddInt32(&sc.awaitCount, -1)
+			sc.yield()
+		case tsk := <-sc.taskQueue:
+			sc.runTask(&tsk)
+		}
+	}
+}
+
+const mask int = 0xFFF
+
+type goroutine_pool struct {
+	sync.Mutex
+	head int
+	tail int
+	pool [mask + 1]*goroutine
+}
+
+func (p *goroutine_pool) put(g *goroutine) bool {
+	var ok bool
+	p.Lock()
+	if (p.tail+1)&mask != p.head {
+		p.pool[p.tail] = g
+		p.tail = (p.tail + 1) & mask
+		ok = true
+	}
+	p.Unlock()
+	return ok
+}
+
+func (p *goroutine_pool) get() (g *goroutine) {
+	p.Lock()
+	if p.head != p.tail {
+		g = p.pool[p.head]
+		p.head = (p.head + 1) & mask
+	}
+	p.Unlock()
+	return g
+}
+
+var gotine_pool goroutine_pool = goroutine_pool{}
+
+func (sc *Scheduler) runTask(tsk *task) {
+	gotine := gotine_pool.get()
+	if gotine == nil {
+		gotine = &goroutine{
+			signal: make(chan *task),
+		}
+		go func() {
+			tsk := gotine.yield()
+			for {
+				tsk.do()
+				from := tsk.sc
+				if gotine.async || len(from.awakeQueue) > 0 {
+					//需要将控制权返回from
+					gotine.async = false
+					if gotine_pool.put(gotine) {
+						from.resume(nil)
+						tsk = gotine.yield()
+					} else {
+						from.resume(nil)
+						return
+					}
+				} else {
+					if len(from.taskQueue) > 0 {
+						//taskQueue有任务，继续获取任务
+						t := <-from.taskQueue
+						tsk = &t
+					} else {
+						//from的任务队列没任务，将控制权返回from
+						if gotine_pool.put(gotine) {
+							from.resume(nil)
+							tsk = gotine.yield()
+						} else {
+							from.resume(nil)
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+	sc.current = gotine
+	gotine.resume(tsk)
+	sc.yield()
+}
+
+func (sc *Scheduler) Start() {
+	ok := false
+	sc.startOnce.Do(func() { ok = true })
+	if ok {
+		go func() {
+			for {
+				select {
+				case gotine := <-sc.awakeQueue:
+					sc.current = gotine
+					//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
+					gotine.resume(nil)
+					atomic.AddInt32(&sc.awaitCount, -1)
+					sc.yield()
+				case tsk := <-sc.taskQueue:
+					sc.runTask(&tsk)
+				case <-sc.die:
+					sc.onDie()
+					close(sc.closeCh)
+					return
+				}
+			}
+		}()
+	}
+}
+
+func call(fn interface{}, args ...interface{}) (result []interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 65535)
+			l := runtime.Stack(buf, false)
+			err = fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
+		}
+	}()
+
 	fnType := reflect.TypeOf(fn)
 	fnValue := reflect.ValueOf(fn)
 	numIn := fnType.NumIn()
@@ -66,260 +269,36 @@ func Call(fn interface{}, args ...interface{}) (result []interface{}) {
 	return
 }
 
-func ProtectCall(fn interface{}, args ...interface{}) (result []interface{}, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			buf := make([]byte, 65535)
-			l := runtime.Stack(buf, false)
-			err = fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
-		}
-	}()
-	result = Call(fn, args...)
-	return
-}
-
-type coroutine struct {
-	signal chan interface{}
-}
-
-func (co *coroutine) Yield() interface{} {
-	return <-co.signal
-}
-
-func (co *coroutine) Resume(data interface{}) {
-	co.signal <- data
-}
-
-type task struct {
-	fn     interface{}
-	params []interface{}
-}
-
-func (t *task) do(s *Scheduler) {
-
-	var arguments []interface{}
-
-	fnType := reflect.TypeOf(t.fn)
-
-	if fnType.NumIn() > 0 && fnType.In(0) == reflect.TypeOf(s) {
-		arguments = make([]interface{}, len(t.params)+1)
-		arguments[0] = s
-		copy(arguments[1:], t.params)
-	} else {
-		arguments = t.params
-	}
-
-	ProtectCall(t.fn, arguments...)
-}
-
-var taskPool = sync.Pool{
-	New: func() interface{} {
-		return &task{}
-	},
-}
-
-func taskGet() *task {
-	r := taskPool.Get().(*task)
-	return r
-}
-
-func taskPut(t *task) {
-	t.params = nil
-	t.fn = nil
-	taskPool.Put(t)
-}
-
-/*
- *  event和co使用单独队列，优先返回co队列中的元素，提高co的处理优先级
- */
-
-type queue struct {
-	taskList *list.List
-	coList   *list.List
-	guard    sync.Mutex
-	cond     *sync.Cond
-}
-
-func (q *queue) pushTask(t *task) error {
-	q.guard.Lock()
-	q.taskList.PushBack(t)
-	q.guard.Unlock()
-	q.cond.Signal()
-	return nil
-}
-
-func (q *queue) pushCo(co *coroutine) error {
-	q.guard.Lock()
-	q.coList.PushBack(co)
-	q.guard.Unlock()
-	q.cond.Signal()
-	return nil
-}
-
-func (q *queue) pop() interface{} {
-	defer q.guard.Unlock()
-	q.guard.Lock()
-
-	for q.taskList.Len() == 0 && q.coList.Len() == 0 {
-		q.cond.Wait()
-	}
-
-	if q.coList.Len() > 0 {
-		return q.coList.Remove(q.coList.Front())
-	} else {
-		return q.taskList.Remove(q.taskList.Front())
-	}
-}
-
-type Scheduler struct {
-	sync.Mutex
-	queue        *queue
-	current      *coroutine //当前正在运行的go程序
-	selfCo       coroutine
-	coCount      int32
-	reserveCount int32
-	freeList     *list.List
-	startOnce    sync.Once
-	closed       int32
-}
-
-func NewScheduler(reserveCount ...int32) *Scheduler {
-
-	queue := &queue{
-		taskList: list.New(),
-		coList:   list.New(),
-	}
-	queue.cond = sync.NewCond(&queue.guard)
-
-	sche := &Scheduler{
-		queue:        queue,
-		selfCo:       coroutine{signal: make(chan interface{})},
-		reserveCount: 10000,
-		freeList:     list.New(),
-	}
-
-	if len(reserveCount) > 0 {
-		sche.reserveCount = reserveCount[0]
-	}
-
-	return sche
-}
-
-func (sc *Scheduler) yield() {
-	sc.selfCo.Yield()
-}
-
-func (sc *Scheduler) resume() {
-	sc.selfCo.Resume(struct{}{})
-}
-
 func (sc *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
-	co := sc.current
+	atomic.AddInt32(&sc.awaitCount, 1)
+
+	current := sc.current
+	current.async = true
+
 	/*  唤醒调度go程，让它可以调度其它任务
 	 *  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
 	 */
-	sc.resume()
+	sc.resume(nil)
 
-	ret, err = ProtectCall(fn, args...)
+	//并发执行fn
+	ret, err = call(fn, args...)
 
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
-	sc.queue.pushCo(co)
-	co.Yield()
+	sc.awakeGo(current)
+	current.yield()
 	return
 }
 
-func (sc *Scheduler) Run(fn interface{}, params ...interface{}) {
-	if atomic.LoadInt32(&sc.closed) == 0 {
-		tt := taskGet()
-		tt.fn = fn
-		tt.params = params
-		sc.queue.pushTask(tt)
+func (sc *Scheduler) Close(waitClose ...bool) {
+	ok := false
+	sc.closeOnce.Do(func() { ok = true })
+	if ok {
+		close(sc.die)
 	}
-}
 
-func (sc *Scheduler) getFree() *coroutine {
-	sc.Lock()
-	defer sc.Unlock()
-	if sc.freeList.Len() != 0 {
-		return sc.freeList.Remove(sc.freeList.Front()).(*coroutine)
-	} else {
-		co := &coroutine{signal: make(chan interface{})}
-		atomic.AddInt32(&sc.coCount, 1)
-		go func() {
-			defer func() {
-				atomic.AddInt32(&sc.coCount, -1)
-				sc.resume()
-			}()
-			for t := co.Yield(); t != nil; t = co.Yield() {
-				t.(*task).do(sc)
-				taskPut(t.(*task))
-				if atomic.LoadInt32(&sc.closed) == 1 || atomic.LoadInt32(&sc.coCount) > sc.reserveCount {
-					break
-				} else {
-					sc.putFree(co)
-					sc.resume()
-				}
-			}
-		}()
-		return co
+	if len(waitClose) > 0 && waitClose[0] {
+		<-sc.closeCh
 	}
-}
-
-func (sc *Scheduler) putFree(co *coroutine) {
-	sc.Lock()
-	defer sc.Unlock()
-	sc.freeList.PushFront(co)
-}
-
-func (sc *Scheduler) runTask(t *task) {
-	co := sc.getFree()
-	sc.current = co
-	co.Resume(t)
-	sc.yield()
-}
-
-func (sc *Scheduler) Start() {
-	sc.startOnce.Do(func() {
-		for {
-			ele := sc.queue.pop()
-			switch o := ele.(type) {
-			case *coroutine:
-				sc.current = o
-				//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
-				o.Resume(struct{}{})
-				sc.yield()
-			case *task:
-				if atomic.LoadInt32(&sc.closed) == 0 {
-					sc.runTask(o)
-				}
-			}
-
-			if atomic.LoadInt32(&sc.closed) == 1 {
-				for {
-					var co *coroutine
-					sc.Lock()
-					if sc.freeList.Len() > 0 {
-						co = sc.freeList.Remove(sc.freeList.Front()).(*coroutine)
-					}
-					sc.Unlock()
-					if nil != co {
-						co.Resume(nil) //发送nil，通告停止
-						sc.yield()
-					} else {
-						return
-					}
-				}
-			}
-		}
-	})
-}
-
-func (sc *Scheduler) IsClosed() bool {
-	return atomic.LoadInt32(&sc.closed) == 1
-}
-
-func (sc *Scheduler) Close() {
-	atomic.CompareAndSwapInt32(&sc.closed, 0, 1)
 }
 
 var defaultScheduler *Scheduler
@@ -329,11 +308,11 @@ func Await(fn interface{}, args ...interface{}) ([]interface{}, error) {
 	return defaultScheduler.Await(fn, args...)
 }
 
-func Run(fn interface{}, params ...interface{}) {
+func RunTask(ctx context.Context, fn func()) error {
 	once.Do(func() {
-		defaultScheduler = NewScheduler()
+		defaultScheduler = NewScheduler(SchedulerOption{TaskQueueCap: 4096})
 		go defaultScheduler.Start()
 	})
 
-	defaultScheduler.Run(fn, params...)
+	return defaultScheduler.RunTask(ctx, fn)
 }
