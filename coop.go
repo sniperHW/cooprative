@@ -42,7 +42,6 @@ func (t *task) do() {
 }
 
 type Scheduler struct {
-	sync.Mutex
 	goroutine
 	taskQueue  chan task
 	awakeQueue chan *goroutine
