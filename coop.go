@@ -1,6 +1,7 @@
 package cooprative
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +28,42 @@ func (co *goroutine) resume(data *Scheduler) {
 	co.signal <- data
 }
 
+type Mutex struct {
+	m        *Scheduler
+	owner    *goroutine
+	waitlist *list.List
+}
+
+func (mtx *Mutex) Lock() {
+	current := mtx.m.current
+	if mtx.owner == nil {
+		mtx.owner = current
+	} else {
+		if mtx.owner == current {
+			panic("Lock error")
+		}
+		mtx.waitlist.PushBack(current)
+		atomic.AddInt32(&mtx.m.awaitCount, 1)
+		mtx.m.sche()
+		//等待唤醒
+		current.yield()
+	}
+}
+
+func (mtx *Mutex) Unlock() {
+	if mtx.owner != mtx.m.current {
+		panic("Unlock error")
+	} else {
+		mtx.owner = nil
+		front := mtx.waitlist.Front()
+		if front != nil {
+			co := mtx.waitlist.Remove(front).(*goroutine)
+			mtx.owner = co
+			mtx.m.awakeQueue <- co
+		}
+	}
+}
+
 type Scheduler struct {
 	taskQueue  chan func()
 	awakeQueue chan *goroutine
@@ -48,6 +85,13 @@ func NewScheduler(opt SchedulerOption) *Scheduler {
 		awakeQueue: make(chan *goroutine, 64),
 		die:        make(chan struct{}),
 		closeCh:    make(chan struct{}),
+	}
+}
+
+func (m *Scheduler) NewMutex() *Mutex {
+	return &Mutex{
+		m:        m,
+		waitlist: list.New(),
 	}
 }
 

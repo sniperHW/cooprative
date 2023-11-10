@@ -11,6 +11,43 @@ import (
 	"time"
 )
 
+func TestLock(t *testing.T) {
+	s := NewScheduler(SchedulerOption{TaskQueueCap: 4096})
+
+	mtx := s.NewMutex()
+
+	s.RunTask(context.Background(), func() {
+		for i := 0; i < 10; i++ {
+			mtx.Lock()
+			fmt.Println("a")
+			mtx.Unlock()
+			s.Await(time.Sleep, time.Millisecond*100)
+		}
+	})
+
+	s.RunTask(context.Background(), func() {
+		for i := 0; i < 10; i++ {
+			mtx.Lock()
+			fmt.Println("b")
+			mtx.Unlock()
+			s.Await(time.Sleep, time.Millisecond*100)
+		}
+	})
+
+	s.RunTask(context.Background(), func() {
+		for i := 0; i < 10; i++ {
+			mtx.Lock()
+			fmt.Println("c")
+			mtx.Unlock()
+			s.Await(time.Sleep, time.Millisecond*100)
+		}
+	})
+
+	s.Start()
+
+	s.Close(true)
+}
+
 func TestCoop(t *testing.T) {
 
 	{
