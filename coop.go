@@ -4,51 +4,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 )
 
+var nextID int32
+
 type goroutine struct {
-	signal chan *task
-	async  bool
+	id     int32
+	signal chan *Scheduler
 }
 
-func (co *goroutine) yield() *task {
-	return <-co.signal
+func (co *goroutine) yield() *Scheduler {
+	m := <-co.signal
+	m.current = co
+	return m
 }
 
-func (co *goroutine) resume(data *task) {
+func (co *goroutine) resume(data *Scheduler) {
 	co.signal <- data
 }
 
-type task struct {
-	fn func()
-	sc *Scheduler
-}
-
-func (t *task) do() {
-	defer func() {
-		if r := recover(); r != nil {
-			buf := make([]byte, 65535)
-			l := runtime.Stack(buf, false)
-			err := fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
-			log.Println(err)
-		}
-	}()
-	t.fn()
-}
-
 type Scheduler struct {
-	goroutine
-	taskQueue  chan task
+	taskQueue  chan func()
 	awakeQueue chan *goroutine
 	current    *goroutine
 	die        chan struct{}
 	startOnce  sync.Once
-	closeOnce  sync.Once
+	closed     int32
 	awaitCount int32
 	closeCh    chan struct{}
 }
@@ -59,43 +44,24 @@ type SchedulerOption struct {
 
 func NewScheduler(opt SchedulerOption) *Scheduler {
 	return &Scheduler{
-		goroutine: goroutine{
-			signal: make(chan *task),
-		},
-		taskQueue:  make(chan task, opt.TaskQueueCap),
+		taskQueue:  make(chan func(), opt.TaskQueueCap),
 		awakeQueue: make(chan *goroutine, 64),
 		die:        make(chan struct{}),
 		closeCh:    make(chan struct{}),
 	}
 }
 
-func (sc *Scheduler) awakeGo(gotine *goroutine) {
-	sc.awakeQueue <- gotine
-}
-
-func (sc *Scheduler) RunTask(ctx context.Context, fn func()) error {
-	select {
-	case sc.taskQueue <- task{sc: sc, fn: fn}:
-		return nil
-	case <-sc.die:
-		return errors.New("Scheduler closed")
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (sc *Scheduler) onDie() {
-	//处理taskQueue中剩余任务，等待awaitCount变成0
-	for atomic.LoadInt32(&sc.awaitCount) > 0 || len(sc.taskQueue) > 0 {
+func (m *Scheduler) RunTask(ctx context.Context, fn func()) error {
+	if m.closed == 1 {
+		return errors.New("mailbox closed")
+	} else {
 		select {
-		case gotine := <-sc.awakeQueue:
-			sc.current = gotine
-			//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
-			gotine.resume(nil)
-			atomic.AddInt32(&sc.awaitCount, -1)
-			sc.yield()
-		case tsk := <-sc.taskQueue:
-			sc.runTask(&tsk)
+		case m.taskQueue <- fn:
+			return nil
+		case <-m.die:
+			return errors.New("mailbox closed")
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
@@ -133,74 +99,68 @@ func (p *goroutine_pool) get() (g *goroutine) {
 
 var gotine_pool goroutine_pool = goroutine_pool{}
 
-func (sc *Scheduler) runTask(tsk *task) {
+func (m *Scheduler) onDie(co *goroutine) {
+	//处理taskQueue中剩余任务，等待awaitCount变成0
+	for atomic.LoadInt32(&m.awaitCount) > 0 || len(m.taskQueue) > 0 {
+		select {
+		case gotine := <-m.awakeQueue:
+			atomic.AddInt32(&m.awaitCount, -1)
+			gotine.resume(m)
+			return
+		case fn := <-m.taskQueue:
+			fn()
+		}
+	}
+	close(m.closeCh)
+}
+
+func (co *goroutine) loop(m *Scheduler) {
+	for {
+		if atomic.LoadInt32(&m.awaitCount) > 0 {
+			select {
+			case gotine := <-m.awakeQueue:
+				atomic.AddInt32(&m.awaitCount, -1)
+				gotine.resume(m)
+				return
+			case fn := <-m.taskQueue:
+				fn()
+			case <-m.die:
+				m.onDie(co)
+				return
+			}
+		} else {
+			select {
+			case fn := <-m.taskQueue:
+				fn()
+			case <-m.die:
+				m.onDie(co)
+				return
+			}
+		}
+	}
+}
+
+func (m *Scheduler) sche() {
 	gotine := gotine_pool.get()
 	if gotine == nil {
 		gotine = &goroutine{
-			signal: make(chan *task),
+			signal: make(chan *Scheduler),
+			id:     atomic.AddInt32(&nextID, 1),
 		}
 		go func() {
-			tsk := gotine.yield()
-			for {
-				tsk.do()
-				from := tsk.sc
-				if gotine.async || len(from.awakeQueue) > 0 {
-					//需要将控制权返回from
-					gotine.async = false
-					if gotine_pool.put(gotine) {
-						from.resume(nil)
-						tsk = gotine.yield()
-					} else {
-						from.resume(nil)
-						return
-					}
-				} else {
-					if len(from.taskQueue) > 0 {
-						//taskQueue有任务，继续获取任务
-						t := <-from.taskQueue
-						tsk = &t
-					} else {
-						//from的任务队列没任务，将控制权返回from
-						if gotine_pool.put(gotine) {
-							from.resume(nil)
-							tsk = gotine.yield()
-						} else {
-							from.resume(nil)
-							return
-						}
-					}
-				}
-			}
-		}()
-	}
-	sc.current = gotine
-	gotine.resume(tsk)
-	sc.yield()
-}
-
-func (sc *Scheduler) Start() {
-	ok := false
-	sc.startOnce.Do(func() { ok = true })
-	if ok {
-		go func() {
-			for {
-				select {
-				case gotine := <-sc.awakeQueue:
-					sc.current = gotine
-					//唤醒co,然后将自己投入等待，待co将主线程唤醒后继续执行
-					gotine.resume(nil)
-					atomic.AddInt32(&sc.awaitCount, -1)
-					sc.yield()
-				case tsk := <-sc.taskQueue:
-					sc.runTask(&tsk)
-				case <-sc.die:
-					sc.onDie()
-					close(sc.closeCh)
+			for m := gotine.yield(); ; m = gotine.yield() {
+				gotine.loop(m)
+				if !gotine_pool.put(gotine) {
 					return
 				}
 			}
 		}()
 	}
+	gotine.resume(m)
+}
+
+func (m *Scheduler) Start() {
+	m.startOnce.Do(m.sche)
 }
 
 func call(fn interface{}, args ...interface{}) (result []interface{}, err error) {
@@ -265,38 +225,27 @@ func call(fn interface{}, args ...interface{}) (result []interface{}, err error)
 			result[i] = v.Interface()
 		}
 	}
-	return
+	return result, err
 }
 
-func (sc *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
-	atomic.AddInt32(&sc.awaitCount, 1)
-
-	current := sc.current
-	current.async = true
-
-	/*  唤醒调度go程，让它可以调度其它任务
-	 *  因此function()现在处于并行执行，可以在里面调用线程安全的阻塞或耗时运算
-	 */
-	sc.resume(nil)
-
+func (m *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
+	atomic.AddInt32(&m.awaitCount, 1)
+	current := m.current
+	m.sche()
 	//并发执行fn
 	ret, err = call(fn, args...)
-
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
-	sc.awakeGo(current)
+	m.awakeQueue <- current
 	current.yield()
-	return
+	return ret, err
 }
 
-func (sc *Scheduler) Close(waitClose ...bool) {
-	ok := false
-	sc.closeOnce.Do(func() { ok = true })
-	if ok {
-		close(sc.die)
+func (m *Scheduler) Close(waitClose ...bool) {
+	if atomic.CompareAndSwapInt32(&m.closed, 0, 1) {
+		close(m.die)
 	}
-
 	if len(waitClose) > 0 && waitClose[0] {
-		<-sc.closeCh
+		<-m.closeCh
 	}
 }
 
