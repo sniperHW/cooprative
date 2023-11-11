@@ -4,9 +4,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
-	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -207,15 +205,7 @@ func (m *Scheduler) Start() {
 	m.startOnce.Do(m.sche)
 }
 
-func call(fn interface{}, args ...interface{}) (result []interface{}, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			buf := make([]byte, 65535)
-			l := runtime.Stack(buf, false)
-			err = fmt.Errorf(fmt.Sprintf("%v: %s", r, buf[:l]))
-		}
-	}()
-
+func call(fn interface{}, args ...interface{}) (result []interface{}) {
 	fnType := reflect.TypeOf(fn)
 	fnValue := reflect.ValueOf(fn)
 	numIn := fnType.NumIn()
@@ -269,19 +259,19 @@ func call(fn interface{}, args ...interface{}) (result []interface{}, err error)
 			result[i] = v.Interface()
 		}
 	}
-	return result, err
+	return result
 }
 
-func (m *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}, err error) {
+func (m *Scheduler) Await(fn interface{}, args ...interface{}) (ret []interface{}) {
 	atomic.AddInt32(&m.awaitCount, 1)
 	current := m.current
 	m.sche()
 	//并发执行fn
-	ret, err = call(fn, args...)
+	ret = call(fn, args...)
 	//将自己添加到待唤醒通道中，然后Wait等待被唤醒后继续执行
 	m.awakeQueue <- current
 	current.yield()
-	return ret, err
+	return ret
 }
 
 func (m *Scheduler) Close(waitClose ...bool) {
@@ -296,7 +286,7 @@ func (m *Scheduler) Close(waitClose ...bool) {
 var defaultScheduler *Scheduler
 var once sync.Once
 
-func Await(fn interface{}, args ...interface{}) ([]interface{}, error) {
+func Await(fn interface{}, args ...interface{}) []interface{} {
 	return defaultScheduler.Await(fn, args...)
 }
 

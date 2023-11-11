@@ -9,68 +9,39 @@ import (
 )
 
 type actor struct {
-	sc      *cooprative.Scheduler
-	mailBox chan func()
-	die     chan struct{}
+	mailBox *cooprative.Scheduler
 }
 
 func (a *actor) ReentrantCall(other *actor, fn func(chan struct{})) {
 	retChan := make(chan struct{})
-
-	other.mailBox <- func() {
-		fn(retChan)
-	}
-
-	a.sc.Await(func() {
-		<-retChan
-	})
+	other.OnEvent(func() { fn(retChan) })
+	a.mailBox.Await(func() { <-retChan })
 }
 
 func (a *actor) Call(other *actor, fn func(chan struct{})) {
 	retChan := make(chan struct{})
-	other.mailBox <- func() {
-		fn(retChan)
-	}
+	other.OnEvent(func() { fn(retChan) })
 	<-retChan
 }
 
 func (a *actor) Start() {
-	go a.sc.Start()
-	go func() {
-		for {
-			select {
-			case <-a.die:
-				a.sc.Close()
-				break
-			case fn := <-a.mailBox:
-				a.sc.RunTask(context.Background(), fn)
-			}
-		}
-	}()
+	a.mailBox.Start()
+}
+
+func (a *actor) OnEvent(fn func()) {
+	a.mailBox.RunTask(context.Background(), fn)
 }
 
 func main() {
-	a := &actor{
-		sc:      cooprative.NewScheduler(cooprative.SchedulerOption{TaskQueueCap: 64}),
-		mailBox: make(chan func(), 64),
-		die:     make(chan struct{}),
-	}
+	a := &actor{mailBox: cooprative.NewScheduler(cooprative.SchedulerOption{TaskQueueCap: 64})}
 
 	a.Start()
 
-	b := &actor{
-		sc:      cooprative.NewScheduler(cooprative.SchedulerOption{TaskQueueCap: 64}),
-		mailBox: make(chan func(), 64),
-		die:     make(chan struct{}),
-	}
+	b := &actor{mailBox: cooprative.NewScheduler(cooprative.SchedulerOption{TaskQueueCap: 64})}
 
 	b.Start()
 
-	a.mailBox <- func() {
-		fmt.Println("hello")
-	}
-
-	a.mailBox <- func() {
+	a.OnEvent(func() {
 		fmt.Println("in A,before a.ReentrantCall")
 		a.ReentrantCall(b, func(retchA chan struct{}) {
 			fmt.Println("in B,before b.Call")
@@ -84,11 +55,11 @@ func main() {
 			retchA <- struct{}{}
 		})
 		fmt.Println("a.ReentrantCall OK")
-	}
+	})
 
 	time.Sleep(time.Second)
 
-	a.mailBox <- func() {
+	a.OnEvent(func() {
 		fmt.Println("in A,before a.Call")
 		a.Call(b, func(retchA chan struct{}) {
 			fmt.Println("in B,before b.Call")
@@ -102,7 +73,7 @@ func main() {
 			retchA <- struct{}{}
 		})
 		fmt.Println("a.Call OK")
-	}
+	})
 
 	time.Sleep(time.Second)
 }
